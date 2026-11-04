@@ -1,0 +1,14 @@
+Package: mailix
+Version: 0.1.0
+Architecture: amd64
+Maintainer: stikkx <stikkx@users.noreply.github.com>
+Depends: libx11-6, libxcursor1, libxrandr2, libxi6, libxinerama1, libxext6, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0
+Recommends: xdg-utils
+Suggests: gnome-keyring | keepassxc
+Section: mail
+Priority: optional
+Homepage: https://github.com/stikkx/mailix
+Description: Fast, lightweight, IMAP-first desktop mail client
+ Native desktop mail client (iced, no webview): IMAP-first with a local
+ SQLite cache, tantivy full-text search, conversations, drafts, attachments
+ and an optional AI assistant. Passwords stay in the OS keyring.

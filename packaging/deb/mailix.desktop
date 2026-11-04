@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Mailix
+GenericName=Mail Client
+Comment=Fast, lightweight, IMAP-first desktop mail client
+Exec=mailix
+Terminal=false
+Categories=Network;Email;
+Icon=mailix

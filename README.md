@@ -35,6 +35,27 @@ A fast, lightweight, IMAP-first desktop mail client in Rust for Linux, macOS and
   correct non-ASCII folder names (IMAP modified UTF-7)
 - Native UI (iced), about 40 MB RAM, no webview
 
+## Install
+
+Download a build from the [latest release](https://github.com/stikkx/mailix/releases/latest) (`SHA256SUMS` lists checksums):
+
+| File | For |
+| --- | --- |
+| `mailix…-x86_64-linux.tar.gz` | Linux x86_64 (Ubuntu 22.04+, Debian, Arch/Omarchy): unpack and run `./mailix` |
+| `mailix…-x86_64-linux.AppImage` | Linux x86_64: portable AppImage — `chmod +x mailix…AppImage && ./mailix…AppImage` |
+| `mailix…_amd64.deb` | Ubuntu/Debian: `sudo apt install ./mailix…_amd64.deb` |
+| `PKGBUILD` | Arch/Omarchy: `makepkg -sf`, then `sudo pacman -U` on the built package |
+| `mailix…-aarch64-apple-darwin.dmg` | macOS Apple Silicon |
+| `mailix…-x86_64-apple-darwin.dmg` | macOS Intel |
+| `mailix…-universal.dmg` | macOS (runs on both architectures) |
+| `mailix…-x86_64-windows.zip` | Windows: unpack anywhere and run `mailix.exe` |
+
+Notes: the Linux tarball needs the usual Wayland/X11 libraries (the `.deb` pulls them in
+automatically) plus a keyring provider — `libxkbcommon-x11-0 libxkbcommon0 libx11-6 libxcursor1
+libxrandr2 libxi6 libxinerama1 libwayland-client0` and GNOME Keyring or KeePassXC. macOS builds are
+ad-hoc signed, not notarized: if Gatekeeper refuses to open Mailix, right-click it and choose
+**Open**.
+
 ## Build & run
 
 ```sh

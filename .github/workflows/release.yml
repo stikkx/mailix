@@ -1,0 +1,293 @@
+name: Release
+
+# Builds native release binaries for macOS (aarch64/x86_64/universal .dmg),
+# Windows (x86_64 zip), Ubuntu (.tar.gz + .deb from an Ubuntu 22.04 container,
+# so the generic Linux tarball also runs on Ubuntu 22.04+, Debian and
+# Arch/Omarchy) and the Arch PKGBUILD, then publishes everything as a
+# GitHub release when a v* tag is pushed.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: Ubuntu (x86_64, glibc 2.35)
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:22.04
+    steps:
+      - name: Install build prerequisites
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential git curl ca-certificates pkg-config dpkg-dev file
+
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Unit tests
+        run: cargo test --locked
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Package tarball
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME#v}"
+          mkdir -p "dist/mailix-$VER"
+          cp target/release/mailix "dist/mailix-$VER/"
+          cp README.md assets/fonts/Inter-LICENSE.txt assets/fonts/lucide-LICENSE.txt "dist/mailix-$VER/"
+          tar -czf "mailix-$VER-x86_64-linux.tar.gz" -C dist "mailix-$VER"
+
+      - name: Package .deb
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME#v}"
+          mkdir -p deb/DEBIAN deb/usr/bin deb/usr/share/applications deb/usr/share/doc/mailix
+          sed "s/^Version: .*/Version: $VER/" packaging/deb/control > deb/DEBIAN/control
+          cp target/release/mailix deb/usr/bin/mailix
+          cp packaging/deb/mailix.desktop deb/usr/share/applications/
+          cp packaging/deb/copyright README.md deb/usr/share/doc/mailix/
+          mkdir -p deb/usr/share/icons/hicolor/256x256/apps
+          cp assets/icon/mailix.png deb/usr/share/icons/hicolor/256x256/apps/mailix.png
+          echo "Installed-Size: $(du -sk deb/usr | cut -f1)" >> deb/DEBIAN/control
+          dpkg-deb --build --root-owner-group deb "mailix_${VER}_amd64.deb"
+
+      - name: Package AppImage
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME#v}"
+          mkdir -p appimage/usr/bin appimage/usr/share/applications \
+            appimage/usr/share/icons/hicolor/256x256/apps
+          cp target/release/mailix appimage/usr/bin/
+          cp packaging/deb/mailix.desktop appimage/usr/share/applications/
+          cp assets/icon/mailix.png appimage/usr/share/icons/hicolor/256x256/apps/mailix.png
+          cp assets/icon/mailix.png appimage/.DirIcon
+          curl -sSLf -o appimagetool.AppImage \
+            https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          echo "b90f4a8b18967545fda78a445b27680a1642f1ef9488ced28b65398f2be7add2  appimagetool.AppImage" | sha256sum --check --
+          chmod +x appimagetool.AppImage
+          ./appimagetool.AppImage --appimage-extract-and-run appimage "mailix-$VER-x86_64-linux.AppImage"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64-dist
+          path: |
+            mailix-*-x86_64-linux.tar.gz
+            mailix_*_amd64.deb
+            mailix-*-x86_64-linux.AppImage
+          if-no-files-found: error
+
+  macos:
+    name: macOS (${{ matrix.target }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Unit tests (native target only)
+        if: matrix.target == 'aarch64-apple-darwin'
+        run: cargo test --locked
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+
+      - name: Upload raw binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-bin-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/mailix
+          if-no-files-found: error
+
+  macos-bundle:
+    name: macOS bundles (.dmg)
+    needs: macos
+    runs-on: macos-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Download built binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: macos-bin-*
+          merge-multiple: true
+          path: bins
+
+      - name: Bundle, sign and image
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME#v}"
+          sed "s/>0\.1\.0</>$VER</" packaging/macos/Info.plist > Info.plist
+          for arch in aarch64 x86_64; do
+            mkdir -p "out/$arch/Mailix.app/Contents/MacOS" "out/$arch/Mailix.app/Contents/Resources"
+            cp "bins/mailix-$arch-apple-darwin" "out/$arch/Mailix.app/Contents/MacOS/mailix"
+            chmod +x "out/$arch/Mailix.app/Contents/MacOS/mailix"
+            cp Info.plist "out/$arch/Mailix.app/Contents/Info.plist"
+            cp assets/fonts/Inter-LICENSE.txt assets/fonts/lucide-LICENSE.txt "out/$arch/Mailix.app/Contents/Resources/"
+            codesign --force --sign - "out/$arch/Mailix.app"
+            hdiutil create -volname "Mailix" -srcfolder "out/$arch" -ov -format UDZO "mailix-$VER-$arch-apple-darwin.dmg"
+          done
+          mkdir -p out/universal/Mailix.app/Contents/MacOS out/universal/Mailix.app/Contents/Resources
+          lipo -create "bins/mailix-aarch64-apple-darwin" "bins/mailix-x86_64-apple-darwin" -output "out/universal/Mailix.app/Contents/MacOS/mailix"
+          chmod +x "out/universal/Mailix.app/Contents/MacOS/mailix"
+          cp Info.plist "out/universal/Mailix.app/Contents/Info.plist"
+          cp assets/fonts/Inter-LICENSE.txt assets/fonts/lucide-LICENSE.txt "out/universal/Mailix.app/Contents/Resources/"
+          codesign --force --sign - "out/universal/Mailix.app"
+          hdiutil create -volname "Mailix" -srcfolder "out/universal" -ov -format UDZO "mailix-$VER-universal.dmg"
+
+      - name: Upload DMGs
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dist
+          path: "*.dmg"
+          if-no-files-found: error
+
+  windows:
+    name: Windows (x86_64)
+    runs-on: windows-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Unit tests
+        run: cargo test --locked
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Package zip
+        shell: pwsh
+        run: |
+          $ver = "${env:GITHUB_REF_NAME}".Substring(1)
+          New-Item -ItemType Directory -Path "dist/mailix-$ver" -Force | Out-Null
+          Copy-Item "target/release/mailix.exe" "dist/mailix-$ver/"
+          Copy-Item "README.md" "dist/mailix-$ver/"
+          Compress-Archive -Path "dist/mailix-$ver" -DestinationPath "mailix-$ver-x86_64-windows.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64-dist
+          path: mailix-*-x86_64-windows.zip
+          if-no-files-found: error
+
+  arch:
+    name: Arch / Omarchy (PKGBUILD)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Prepare PKGBUILD
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME#v}"
+          sed "s/^pkgver=.*/pkgver=$VER/" packaging/arch/PKGBUILD > PKGBUILD
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: arch-dist
+          path: PKGBUILD
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    needs: [linux, macos, macos-bundle, windows, arch]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Collect artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "*-dist"
+          path: assets
+          merge-multiple: true
+
+      - name: Compute checksums
+        run: (cd assets && sha256sum ./* > SHA256SUMS)
+
+      - name: Write release notes
+        run: |
+          cat > notes.md <<'EOF'
+          Mailix __TAG__ - first release.
+
+          A fast, lightweight, IMAP-first native desktop mail client (iced, no webview).
+          Local SQLite cache, tantivy full-text search, conversations, drafts,
+          attachments, address book (LDAP/Google), optional AI assistant.
+
+          ### Downloads
+
+          | File | Platform |
+          | --- | --- |
+          | mailix-__TAG__-x86_64-linux.tar.gz | Linux, x86_64 (Ubuntu 22.04+, Debian, Arch/Omarchy) - unpack and run mailix |
+          | mailix-__TAG__-x86_64-linux.AppImage | Linux, x86_64 - portable AppImage, no install: chmod +x and run |
+          | mailix___TAG___amd64.deb | Ubuntu/Debian - sudo apt install ./mailix___TAG___amd64.deb |
+          | PKGBUILD | Arch / Omarchy - makepkg -sf, then sudo pacman -U on the built package |
+          | mailix-__TAG__-aarch64-apple-darwin.dmg | macOS 11+, Apple Silicon |
+          | mailix-__TAG__-x86_64-apple-darwin.dmg | macOS 11+, Intel |
+          | mailix-__TAG__-universal.dmg | macOS 11+, universal (both architectures) |
+          | mailix-__TAG__-x86_64-windows.zip | Windows 10/11 x64 - portable zip |
+
+          ### First-run notes
+
+          - Linux needs the usual Wayland/X11 libraries and a Secret Service provider
+            (GNOME Keyring or KeePassXC) for the password keyring. The .deb pulls the
+            libraries in automatically (the AppImage and tarball use the ones on your
+            system - they are present on every desktop distribution).
+          - Windows is a portable zip without installer. If SmartScreen warns, choose
+            More info -> Run anyway.
+          - macOS binaries are ad-hoc signed, not notarized. If Gatekeeper refuses to
+            open Mailix, right-click it and choose Open.
+          - Privacy by default: no telemetry, remote images are blocked until clicked,
+            AI and grammar checking are off unless you enable them, and passwords stay
+            in the OS keyring.
+
+          SHA256SUMS lists the checksums of all files. Full feature list: README.md.
+          EOF
+          sed -i "s/__TAG__/${GITHUB_REF_NAME}/g" notes.md
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "Mailix ${GITHUB_REF_NAME}" \
+            --notes-file notes.md \
+            assets/*

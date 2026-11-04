@@ -1,0 +1,43 @@
+# Maintainer: stikkx (https://github.com/stikkx)
+# Mailix: fast, lightweight, IMAP-first desktop mail client.
+#
+# While the repository is private, makepkg fetches it over SSH, so you need a
+# GitHub account with access to stikkx/mailix and your SSH key configured for
+# github.com. Once the repository is public, you can switch source= to
+#   source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+# and put a real sha256 checksum in place of SKIP.
+#
+# Build and install:
+#   makepkg -sf
+#   sudo pacman -U mailix-<version>.pkg.tar.zst
+
+pkgname=mailix
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Fast, lightweight, IMAP-first desktop mail client"
+arch=(x86_64)
+url="https://github.com/stikkx/mailix"
+license=(MIT)
+depends=(wayland libxkbcommon libxkbcommon-x11 libx11 libxcursor libxrandr libxi libxinerama xdg-utils)
+makedepends=(git rust)
+source=("git+ssh://git@github.com/stikkx/mailix.git#tag=v$pkgver")
+md5sums=('SKIP')
+
+check() {
+  # Unit tests only: no network, no keyring access.
+  cd "mailix"
+  cargo test --locked
+}
+
+build() {
+  cd "mailix"
+  cargo build --release --locked
+}
+
+package() {
+  cd "mailix"
+  install -Dm0755 target/release/mailix "$pkgdir/usr/bin/mailix"
+  install -Dm0644 README.md "$pkgdir/usr/share/doc/mailix/README.md"
+  install -Dm0644 assets/fonts/Inter-LICENSE.txt "$pkgdir/usr/share/licenses/mailix/Inter-LICENSE.txt"
+  install -Dm0644 assets/fonts/lucide-LICENSE.txt "$pkgdir/usr/share/licenses/mailix/lucide-LICENSE.txt"
+}
