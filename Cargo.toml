@@ -1,0 +1,53 @@
+[package]
+name = "mailix"
+version = "0.1.0"
+edition = "2024"
+description = "Fast, lightweight, IMAP-first desktop mail client"
+license = "MIT"
+
+[dependencies]
+iced = { version = "0.14", default-features = false, features = ["tiny-skia", "crisp", "web-colors", "thread-pool", "linux-theme-detection", "x11", "wayland", "tokio", "advanced", "image-without-codecs"] }
+# Image decoders for pictures in HTML mail (kept small: no TIFF/AVIF/EXR…).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico"] }
+tokio = { version = "1", features = ["full"] }
+async-imap = { version = "0.12", default-features = false, features = ["runtime-tokio"] }
+tokio-rustls = "0.26"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "1"
+futures = "0.3"
+mail-parser = "1"
+mail-builder = "2"
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-rustls", "ring", "webpki-roots"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
+tantivy = "0.27"
+ldap3 = { version = "0.12", default-features = false, features = ["tls-rustls-ring"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "form", "query"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+directories = "6"
+keyring = "4"
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+html2text = "0.15"
+rfd = "0.17"
+notify-rust = "4"
+mime_guess = "2"
+open = "5"
+url = "2"
+base64 = "0.22"
+sha2 = "0.10"
+rand = "0.9"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[features]
+# Software rendering (tiny-skia) is the default: ~40 MB RSS instead of ~140 MB.
+# Enable `gpu` for wgpu rendering, which scrolls smoother on large/HiDPI screens.
+gpu = ["iced/wgpu"]
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+opt-level = 3
