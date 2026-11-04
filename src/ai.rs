@@ -18,8 +18,13 @@ enum Effort {
 }
 
 fn key(cfg: &AiConfig) -> Result<Option<String>> {
+    // Providers without a key (local Ollama, custom servers) must work on
+    // machines without an OS keyring — don't touch the keyring at all.
+    if !cfg.provider.needs_key() {
+        return Ok(None);
+    }
     let k = secrets::get(&cfg.provider.key_name())?;
-    if k.is_none() && cfg.provider.needs_key() {
+    if k.is_none() {
         bail!("no API key for {} — add it in Settings → AI assistant", cfg.provider);
     }
     Ok(k)
