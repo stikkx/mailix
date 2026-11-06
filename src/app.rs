@@ -377,6 +377,7 @@ pub enum SettingsMsg {
     SyncInterval(String),
     GrammarEnabled(bool),
     GrammarServer(String),
+    GrammarCopyCmd,
     GrammarLanguage(crate::config::GrammarLang),
     GrammarGb(bool),
     GrammarIgnored(String),
@@ -2165,6 +2166,12 @@ impl App {
                 s.draft.grammar.ignored =
                     v.split(',').map(str::trim).filter(|w| !w.is_empty()).map(String::from).collect();
                 s.grammar_ignored = v;
+            }
+            SettingsMsg::GrammarCopyCmd => {
+                s.note = Some(Ok(
+                    "Copied the command that runs a local LanguageTool server. Start it, then press Local and Test.".into(),
+                ));
+                return iced::clipboard::write(crate::config::LANGUAGETOOL_DOCKER.to_string());
             }
             SettingsMsg::GrammarTest => {
                 s.busy = true;

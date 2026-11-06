@@ -347,6 +347,8 @@ impl std::fmt::Display for GrammarLang {
 
 pub const LANGUAGETOOL_LOCAL: &str = "http://localhost:8010";
 pub const LANGUAGETOOL_PUBLIC: &str = "https://api.languagetool.org";
+/// How to run a private LanguageTool server (shown + copied in Settings → General).
+pub const LANGUAGETOOL_DOCKER: &str = "docker run -d -p 8010:8010 erikvl87/languagetool";
 
 /// Grammar and spelling check (LanguageTool).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

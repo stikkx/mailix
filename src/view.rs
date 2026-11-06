@@ -112,6 +112,7 @@ pub mod ic {
     pub const REPLY_ARROW: char = '\u{e0a2}';
     pub const FOLDER_TREE: char = '\u{e33c}';
     pub const SPELL: char = '\u{e49a}';
+    pub const COPY: char = '\u{e09e}';
     pub const CHEVRON_LEFT: char = '\u{e06e}';
 }
 
@@ -1615,25 +1616,40 @@ impl App {
                     .on_toggle(|b| Msg::Settings(SettingsMsg::GrammarEnabled(b)))
                     .text_size(14)
                     .style(theme::check),
-                labeled(
-                    "LanguageTool server. A local server keeps your text on this machine \
-                     (docker run -d -p 8010:8010 erikvl87/languagetool); the public one receives what you write.",
+                column![
+                    labeled(
+                        "LanguageTool server. The public one receives what you write; a local one keeps \
+                         your text on this machine.",
+                        row![
+                            input(crate::config::LANGUAGETOOL_LOCAL, &s.draft.grammar.server)
+                                .on_input(|v| Msg::Settings(SettingsMsg::GrammarServer(v)))
+                                .width(Fill),
+                            button(text("Local").size(12)).style(theme::link).on_press(Msg::Settings(
+                                SettingsMsg::GrammarServer(crate::config::LANGUAGETOOL_LOCAL.into())
+                            )),
+                            button(text("Public").size(12)).style(theme::link).on_press(Msg::Settings(
+                                SettingsMsg::GrammarServer(crate::config::LANGUAGETOOL_PUBLIC.into())
+                            )),
+                            secondary_btn(if s.busy { "Testing…" } else { "Test" }, (!s.busy).then_some(Msg::Settings(SettingsMsg::GrammarTest))),
+                        ]
+                        .spacing(8)
+                        .align_y(Alignment::Center)
+                        .into()
+                    ),
                     row![
-                        input(crate::config::LANGUAGETOOL_LOCAL, &s.draft.grammar.server)
-                            .on_input(|v| Msg::Settings(SettingsMsg::GrammarServer(v)))
-                            .width(Fill),
-                        button(text("Local").size(12)).style(theme::link).on_press(Msg::Settings(
-                            SettingsMsg::GrammarServer(crate::config::LANGUAGETOOL_LOCAL.into())
-                        )),
-                        button(text("Public").size(12)).style(theme::link).on_press(Msg::Settings(
-                            SettingsMsg::GrammarServer(crate::config::LANGUAGETOOL_PUBLIC.into())
-                        )),
-                        secondary_btn(if s.busy { "Testing…" } else { "Test" }, (!s.busy).then_some(Msg::Settings(SettingsMsg::GrammarTest))),
+                        muted(crate::config::LANGUAGETOOL_DOCKER).size(12),
+                        tool(
+                            ic::COPY,
+                            "",
+                            Some(Msg::Settings(SettingsMsg::GrammarCopyCmd)),
+                            "Copy the run command for a local LanguageTool (Docker)",
+                        ),
                     ]
-                    .spacing(8)
-                    .align_y(Alignment::Center)
-                    .into()
-                ),
+                    .spacing(6)
+                    .align_y(Alignment::Center),
+                ]
+                .spacing(5)
+                .width(Fill),
                 row![
                     labeled(
                         "Language",

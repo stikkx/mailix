@@ -20,7 +20,8 @@ A fast, lightweight, IMAP-first desktop mail client in Rust for Linux, macOS and
   Ctrl+B/I/U/K). Sent as HTML with a plain-text alternative; unformatted mail stays plain text.
 - **Grammar & spelling** (German and English, optional): LanguageTool marks mistakes in red while you
   write; the bar under the editor offers fixes, Ignore and next/previous. Off by default — use a local server
-  (`docker run -d -p 8010:8010 erikvl87/languagetool`) to keep your text on your machine
+  (`docker run -d -p 8010:8010 erikvl87/languagetool`, copied to the clipboard from Settings → General)
+  to keep your text on your machine
 - **Drag & drop**: drag a mail onto a folder to move it; dragging a conversation's top row moves the
   whole conversation
 - **Drafts**: leaving the composer (Esc, clicking a folder or mail) or 30 s of typing saves the message to
