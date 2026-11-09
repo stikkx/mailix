@@ -29,6 +29,8 @@ pub struct Run {
     pub em: bool,
     pub code: bool,
     pub strike: bool,
+    /// Background highlight (e.g. `<mark>`, `background-color`) as RGB.
+    pub mark: Option<[u8; 3]>,
     /// `src` of an <img>; `text` holds its alt text.
     pub image: Option<String>,
 }
@@ -84,10 +86,9 @@ pub fn html_runs(html: &str) -> Vec<Run> {
     use html2text::render::RichAnnotation as A;
     // Huge width: we only want the structure; iced does the wrapping.
     let html = normalize_tags(html);
-    // Raw mode reads table cells one after another: mail layouts (signatures,
-    // newsletters) are tables, and laid out as columns at this width they
-    // turn into huge gaps and stray `|` separators.
-    let Ok(lines) = html2text::config::rich().raw_mode(true).lines_from_read(html.as_bytes(), 10_000) else {
+    // CSS support: <style> classes and inline styles/backgrounds (<mark>,
+    // Word/Outlook/Google-Docs highlights) become BgColour annotations.
+    let Ok(lines) = html2text::config::rich().use_doc_css().raw_mode(true).lines_from_read(html.as_bytes(), 10_000) else {
         return Vec::new();
     };
     let mut runs: Vec<Run> = Vec::new();
@@ -130,6 +131,7 @@ pub fn html_runs(html: &str) -> Vec<Run> {
                     A::Emphasis => r.em = true,
                     A::Code | A::Preformat(_) => r.code = true,
                     A::Strikeout => r.strike = true,
+                    A::BgColour(c) => r.mark = Some([c.r, c.g, c.b]),
                     _ => {}
                 }
             }
@@ -208,6 +210,8 @@ pub enum Hl {
     Strong,
     Link,
     Code,
+    /// Background highlight from the HTML, as the original RGB.
+    Mark([u8; 3]),
     Muted,
 }
 
@@ -303,6 +307,8 @@ pub fn blocks(runs: &[Run], available: impl Fn(&str) -> bool) -> Vec<Block> {
         }
         let hl = if r.link.is_some() {
             Some(Hl::Link)
+        } else if let Some(rgb) = r.mark {
+            Some(Hl::Mark(rgb))
         } else if r.code {
             Some(Hl::Code)
         } else if r.strong {
@@ -343,8 +349,14 @@ fn tiny_image(tag: &str) -> bool {
 }
 
 fn normalize_tags(html: &str) -> String {
+    // Outlook marks words with `mso-highlight:yellow` and no background-color.
+    // html2text's CSS pass only understands real background colours.
+    let html = html.replace(
+        "mso-highlight:yellow",
+        "mso-highlight:yellow;background-color:#ffff00",
+    );
     let mut out = String::with_capacity(html.len() + 64);
-    let mut rest = html;
+    let mut rest = html.as_str();
     while let Some(i) = rest.find('<') {
         out.push_str(&rest[..i]);
         rest = &rest[i..];
@@ -379,6 +391,16 @@ fn normalize_tags(html: &str) -> String {
                 continue;
             }
         }
+        // A bare <mark> has its yellow only as a browser CSS default, which
+        // html2text does not know — make it a concrete background colour.
+        if !close && name_eq(&rest, "mark") {
+            let end = rest.find('>').unwrap_or(rest.len());
+            if !rest[..end].to_ascii_lowercase().contains("style=") {
+                out.push_str("<mark style=\"background-color:#ffff00\"");
+                rest = &rest[5..];
+                continue;
+            }
+        }
         match repl {
             Some(r) => {
                 out.push_str(if close { "</" } else { "<" });
@@ -393,6 +415,15 @@ fn normalize_tags(html: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// The tag at `rest` (always an opening `<`) has exactly this name.
+fn name_eq(rest: &str, name: &str) -> bool {
+    let Some(body) = rest.get(1..) else { return false };
+    let end = body
+        .find(|c: char| c.is_ascii_whitespace() || matches!(c, '>' | '/'))
+        .unwrap_or(body.len());
+    body[..end].eq_ignore_ascii_case(name)
 }
 
 /// Writes the HTML body to a file for viewing in the browser. Embedded
@@ -505,6 +536,42 @@ Content-Type: multipart/mixed; boundary=\"B\"\r\n\r\n\
     #[test]
     fn normalizes_b_and_i() {
         assert_eq!(normalize_tags("<B>x</b> <i class=a>y</I> <br><img src=x>"), "<strong>x</strong> <em class=a>y</em> <br><img alt=\"\u{2060}\" src=x>");
+    }
+
+    #[test]
+    fn parses_marked_html() {
+        // <mark> carries its yellow only as browser CSS default; Outlook uses
+        // mso-highlight. Both must end up as a concrete background colour.
+        let runs = html_runs(
+            "<style>.hi { background-color: #ff00ff; }</style>\
+             <p>a <mark>b</mark> <span style=\"background-color:yellow\">c</span>\u{a0}\
+             <span style=\"background-color:#00ff00\">d</span> <span class=\"hi\">e</span>\
+             <span style=\"mso-highlight:yellow\">f</span></p>",
+        );
+        let marked = |needle: &str| {
+            runs.iter()
+                .find(|r| r.text.contains(needle))
+                .and_then(|r| r.mark)
+        };
+        let yellow = Some([0xff, 0xff, 0x00]);
+        assert_eq!(marked("b"), yellow, "{runs:?}");
+        assert_eq!(marked("c"), yellow, "{runs:?}");
+        assert_eq!(marked("d"), Some([0x00, 0xff, 0x00]), "{runs:?}");
+        assert_eq!(marked("e"), Some([0xff, 0x00, 0xff]), "{runs:?}");
+        assert_eq!(marked("f"), yellow, "{runs:?}");
+        assert_eq!(runs.iter().filter(|r| r.mark.is_some()).count(), 5, "{runs:?}");
+    }
+
+    #[test]
+    fn marks_block_ranges() {
+        let runs = html_runs("<p>Hi <mark>Bob</mark> and <a href=\"https://x.y\">site</a></p>");
+        let b = blocks(&runs, |_| true);
+        let Block::Text { text, lines, .. } = &b[0] else { panic!("{b:?}") };
+        let bob = text.find("Bob").unwrap()..text.find("Bob").unwrap() + 3;
+        assert!(
+            lines.iter().flatten().any(|(r, h)| *r == bob && *h == Hl::Mark([0xff, 0xff, 0x00])),
+            "{lines:?}"
+        );
     }
 
     #[test]

@@ -374,6 +374,8 @@ fn hl_format(h: &Hl, t: &iced::Theme) -> iced::advanced::text::highlighter::Form
         Hl::Strong => Format { color: None, font: Some(SEMIBOLD) },
         Hl::Link => Format { color: Some(t.palette().primary), font: None },
         Hl::Code => Format { color: None, font: Some(Font::MONOSPACE) },
+        // Background highlights can't be drawn in the editor; tint the text.
+        Hl::Mark(rgb) => Format { color: theme::marked_text(*rgb, t), font: None },
         Hl::Muted => Format { color: Some(theme::muted(t)), font: None },
     }
 }

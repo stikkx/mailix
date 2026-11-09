@@ -59,6 +59,82 @@ pub fn muted(theme: &Theme) -> Color {
     Color { a: 0.6, ..theme.extended_palette().background.base.text }
 }
 
+/// Text colour for a background highlight in HTML mail (`<mark>`,
+/// `background-color`): it keeps the original hue but is pushed far enough
+/// from the theme background to stay readable. `None` for neutral
+/// backgrounds (white/grey/black) that carry no visible marking.
+pub fn marked_text(rgb: [u8; 3], theme: &Theme) -> Option<Color> {
+    let (h, s, l) = rgb_to_hsl(rgb);
+    if s < 0.2 {
+        return None;
+    }
+    let s = s.max(0.55);
+    let bg = luminance(theme.palette().background).clamp(0.05, 0.95);
+    let mut l = l;
+    let mut out = hsl_to_rgb(h, s, l);
+    for _ in 0..24 {
+        if (luminance(out) - bg).abs() >= 0.35 {
+            break;
+        }
+        l += if bg > 0.5 { -0.04 } else { 0.04 };
+        if !(0.02..=0.98).contains(&l) {
+            break;
+        }
+        out = hsl_to_rgb(h, s, l);
+    }
+    Some(out)
+}
+
+fn luminance(c: Color) -> f32 {
+    0.2126 * c.r + 0.7152 * c.g + 0.0722 * c.b
+}
+
+fn rgb_to_hsl(rgb: [u8; 3]) -> (f32, f32, f32) {
+    let [r, g, b] = rgb.map(|c| c as f32 / 255.0);
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let (d, l) = (max - min, (max + min) / 2.0);
+    if d < 1e-6 {
+        return (0.0, 0.0, l);
+    }
+    let s = if l > 0.5 { d / (2.0 - max - min) } else { d / (max + min) };
+    let h = if (max - r).abs() < 1e-6 {
+        (g - b) / d + if g < b { 6.0 } else { 0.0 }
+    } else if (max - g).abs() < 1e-6 {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    };
+    (h / 6.0, s, l)
+}
+
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> Color {
+    if s <= 1e-6 {
+        return Color { r: l, g: l, b: l, a: 1.0 };
+    }
+    let q = if l < 0.5 { l * (1.0 + s) } else { l + s - l * s };
+    let p = 2.0 * l - q;
+    let f = |mut t: f32| {
+        if t < 0.0 {
+            t += 1.0;
+        }
+        if t > 1.0 {
+            t -= 1.0;
+        }
+        let v = if t < 1.0 / 6.0 {
+            p + (q - p) * 6.0 * t
+        } else if t < 0.5 {
+            q
+        } else if t < 2.0 / 3.0 {
+            p + (q - p) * (2.0 / 3.0 - t) * 6.0
+        } else {
+            p
+        };
+        v.clamp(0.0, 1.0)
+    };
+    Color { r: f(h + 1.0 / 3.0), g: f(h), b: f(h - 1.0 / 3.0), a: 1.0 }
+}
+
 // ---- containers -------------------------------------------------------------
 
 /// Sidebar, toolbars, status bar.
@@ -289,4 +365,38 @@ pub fn scroll(theme: &Theme, status: scrollable::Status) -> scrollable::Style {
         rail.background = None;
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mark_tint_keeps_hue_and_adapts() {
+        let yellow = [0xff, 0xff, 0x00];
+        let light = marked_text(yellow, &build(Mode::Light, "#000000")).unwrap();
+        assert!(light.b < 0.2 && light.r > 0.55, "{light:?}");
+        assert!((0.4..0.8).contains(&luminance(light)), "{light:?}");
+        let dark = marked_text(yellow, &build(Mode::Dark, "#000000")).unwrap();
+        assert!(luminance(dark) >= 0.55, "{dark:?}");
+    }
+
+    #[test]
+    fn mark_tint_skips_neutrals() {
+        assert!(marked_text([0xf2, 0xf2, 0xf2], &build(Mode::Light, "#000000")).is_none());
+        assert!(marked_text([17, 17, 17], &build(Mode::Light, "#000000")).is_none());
+        // A pale yellow highlight still counts.
+        assert!(marked_text([0xfb, 0xed, 0x7c], &build(Mode::Light, "#000000")).is_some());
+    }
+
+    #[test]
+    fn hsl_roundtrip() {
+        for rgb in [[255u8, 0, 0], [0, 255, 0], [34, 170, 221], [255, 255, 0], [128, 128, 128]] {
+            let (h, s, l) = rgb_to_hsl(rgb);
+            let c = hsl_to_rgb(h, s, l);
+            assert!((c.r - rgb[0] as f32 / 255.0).abs() < 1e-3, "{rgb:?} -> {c:?}");
+            assert!((c.g - rgb[1] as f32 / 255.0).abs() < 1e-3, "{rgb:?} -> {c:?}");
+            assert!((c.b - rgb[2] as f32 / 255.0).abs() < 1e-3, "{rgb:?} -> {c:?}");
+        }
+    }
 }

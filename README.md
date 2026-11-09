@@ -13,9 +13,10 @@ A fast, lightweight, IMAP-first desktop mail client in Rust for Linux, macOS and
 - **Follows the OS** light/dark setting live
 - **Address book** with LDAP and Google Contacts sync, plus autocomplete from people you've emailed
 - **Proton Mail** via Proton Bridge (preset included)
-- **HTML mail** shown formatted in-app with embedded images; remote images (tracking pixels) are blocked
-  until you click "Show images". Mail text is selectable and copyable (Ctrl+C); Ctrl+click opens links.
-  "Open in browser" shows the original layout with scripts and remote content blocked.
+- **HTML mail** shown formatted in-app with embedded images and background highlights (as tinted text);
+  remote images (tracking pixels) are blocked until you click "Show images". Mail text is selectable and
+  copyable (Ctrl+C); Ctrl+click opens links. "Open in browser" shows the original layout with scripts and
+  remote content blocked.
 - **Formatting editor**: bold, italic, underline, strikethrough, lists, quotes, links (toolbar or
   Ctrl+B/I/U/K). Sent as HTML with a plain-text alternative; unformatted mail stays plain text.
 - **Grammar & spelling** (German and English, optional): LanguageTool marks mistakes in red while you

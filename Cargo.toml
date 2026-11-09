@@ -29,7 +29,7 @@ directories = "6"
 keyring = "4"
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
-html2text = "0.15"
+html2text = { version = "0.15", default-features = false, features = ["css_ext"] }
 rfd = "0.17"
 notify-rust = "4"
 mime_guess = "2"
