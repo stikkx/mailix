@@ -111,6 +111,7 @@ pub mod ic {
     pub const THREADS: char = '\u{e40d}';
     pub const REPLY_ARROW: char = '\u{e0a2}';
     pub const FOLDER_TREE: char = '\u{e33c}';
+    pub const FOLDER_PLUS: char = '\u{e0d9}';
     pub const SPELL: char = '\u{e49a}';
     pub const COPY: char = '\u{e09e}';
     pub const CHEVRON_LEFT: char = '\u{e06e}';
@@ -375,7 +376,9 @@ fn hl_format(h: &Hl, t: &iced::Theme) -> iced::advanced::text::highlighter::Form
         Hl::Link => Format { color: Some(t.palette().primary), font: None },
         Hl::Code => Format { color: None, font: Some(Font::MONOSPACE) },
         // Background highlights can't be drawn in the editor; tint the text.
-        Hl::Mark(rgb) => Format { color: theme::marked_text(*rgb, t), font: None },
+        Hl::Mark(rgb) => Format { color: theme::text_ink(*rgb, t), font: None },
+        // Foreground colours from the HTML: adapted for readability here.
+        Hl::Colour(rgb) => Format { color: theme::text_ink(*rgb, t), font: None },
         Hl::Muted => Format { color: Some(theme::muted(t)), font: None },
     }
 }
@@ -565,6 +568,10 @@ impl App {
                         self.status_dot(acc_id),
                         Space::new().width(Fill),
                         badge,
+                        button(icon(ic::FOLDER_PLUS, 13))
+                            .padding([1, 5])
+                            .style(theme::link)
+                            .on_press(Msg::NewFolderStart(acc_id.clone())),
                     ]
                     .spacing(6)
                     .align_y(Alignment::Center),
@@ -576,6 +583,29 @@ impl App {
             );
             if collapsed {
                 continue;
+            }
+            if let Some((id, name)) = &self.new_folder {
+                if id == acc_id {
+                    c = c.push(
+                        row![
+                            input("Folder name", name)
+                                .id(iced::widget::Id::new("new-folder-input"))
+                                .on_input(Msg::NewFolderInput)
+                                .on_submit(Msg::NewFolderSubmit)
+                                .padding([5, 8])
+                                .size(13)
+                                .style(theme::input)
+                                .width(Fill),
+                            button(icon(ic::CLOSE, 12))
+                                .padding([1, 7])
+                                .style(theme::link)
+                                .on_press(Msg::NewFolderCancel),
+                        ]
+                        .spacing(6)
+                        .align_y(Alignment::Center)
+                        .padding(iced::Padding { top: 0.0, bottom: 6.0, left: 30.0, right: 16.0 }),
+                    );
+                }
             }
             for f in folders {
                 let key = folder_key(acc_id, &f.name);
@@ -628,7 +658,8 @@ impl App {
                 c = c.push(
                     iced::widget::mouse_area(row_el)
                         .on_enter(Msg::HoverFolder(Some(key.clone())))
-                        .on_exit(Msg::Unhover(key.clone())),
+                        .on_exit(Msg::Unhover(key.clone()))
+                        .on_release(Msg::DroppedOn(key.clone())),
                 );
             }
             if mode == SidebarMode::Favorites && !folders.iter().any(|f| self.favorites.contains(&folder_key(acc_id, &f.name))) {
@@ -1302,6 +1333,7 @@ impl App {
             )
             .on_enter(Msg::AddrDropHover(target))
             .on_exit(Msg::AddrDropLeft(target))
+            .on_release(Msg::AddrDropped(target))
             .into()
         };
 

@@ -238,6 +238,8 @@ pub struct App {
     pub hover_row: Option<i64>,
     /// Mail being dragged onto a folder.
     pub drag: Option<Drag>,
+    /// Folder creation in progress: account id and the typed name.
+    pub new_folder: Option<(String, String)>,
     /// Last connection result per account: Ok(()) online, Err(reason) offline.
     pub acc_status: HashMap<String, Result<(), String>>,
     pub syncing: HashSet<String>,
@@ -325,6 +327,19 @@ pub enum Msg {
     /// A recipient line is a drop target while a chip is dragged.
     AddrDropHover(Field),
     AddrDropLeft(Field),
+    /// Release landed ON this folder while a drag was going on: drop the
+    /// dragged mail here (the widget sees the release reliably, unlike the
+    /// streamed cursor events that can drop/lag on fast drags).
+    DroppedOn(String),
+    /// Release landed on this recipient line while a chip was dragged.
+    AddrDropped(Field),
+    /// Start creating a folder for an account (inline input in the sidebar).
+    NewFolderStart(String),
+    NewFolderInput(String),
+    NewFolderSubmit,
+    NewFolderCancel,
+    /// A folder was created on the server; refresh the folder list.
+    FolderCreated(String, String),
     /// Remove a recipient chip.
     RemoveAddr(Field, usize),
     /// Turn the text being typed into a chip (Enter in a recipient input).
@@ -503,6 +518,7 @@ impl App {
             hovered: None,
             hover_row: None,
             drag: None,
+            new_folder: None,
             acc_status: HashMap::new(),
             syncing: HashSet::new(),
             live: HashSet::new(),
@@ -1104,7 +1120,10 @@ impl App {
                 }
                 self.save_collapsed();
             }
-            Msg::HoverFolder(key) => self.hovered = key,
+            Msg::HoverFolder(key) => {
+                tracing::debug!("[DnD] HoverFolder {:?}", key);
+                self.hovered = key;
+            }
             Msg::HoverRow(id) => self.hover_row = Some(id),
             Msg::UnhoverRow(id) => {
                 if self.hover_row == Some(id) {
@@ -1112,6 +1131,8 @@ impl App {
                 }
             }
             Msg::MouseDown => {
+                let hover = self.hover_row;
+                tracing::debug!("[DnD] MouseDown hover_row={:?}", hover);
                 if let Screen::Compose(c) = &mut self.screen {
                     if c.addr_drag.is_none() {
                         if let Some((field, idx)) = c.addr_hover {
@@ -1132,12 +1153,16 @@ impl App {
             }
             Msg::MouseMoved(p) => {
                 if let Some(d) = &mut self.drag {
+                    let before = (d.active, d.start.is_some());
                     match d.start {
                         None => d.start = Some(p),
                         Some(s) if !d.active && s.distance(p) > 6.0 => d.active = true,
                         _ => {}
                     }
                     d.pos = p;
+                    if before != (d.active, d.start.is_some()) {
+                        tracing::debug!("[DnD] drag transitions to {:?} at {:?}", (d.start.is_some(), d.active), p);
+                    }
                 }
                 if let Screen::Compose(c) = &mut self.screen {
                     if let Some(d) = &mut c.addr_drag {
@@ -1151,6 +1176,7 @@ impl App {
                 }
             }
             Msg::MouseUp => {
+                tracing::debug!("[DnD] MouseUp drag_active={:?} hovered={:?}", self.drag.as_ref().map(|d| d.active), self.hovered);
                 if let Screen::Compose(c) = &mut self.screen {
                     if let Some(d) = c.addr_drag.take() {
                         if !d.active {
@@ -1397,6 +1423,49 @@ impl App {
                     return self.sync(acc);
                 }
             }
+            Msg::NewFolderStart(id) => {
+                self.new_folder = Some((id, String::new()));
+                return operation::focus(iced::widget::Id::new("new-folder-input"));
+            }
+            Msg::NewFolderInput(v) => {
+                if let Some((_, n)) = &mut self.new_folder {
+                    *n = v;
+                }
+            }
+            Msg::NewFolderCancel => self.new_folder = None,
+            Msg::NewFolderSubmit => {
+                let (id, name) = match self.new_folder.take() {
+                    Some(v) => v,
+                    None => return Task::none(),
+                };
+                let name = name.trim().to_string();
+                if name.is_empty() {
+                    self.new_folder = Some((id, name));
+                    self.status = Some(Err("Enter a folder name first.".into()));
+                    return Task::none();
+                }
+                let Some(acc) = self.account(&id).cloned() else { return Task::none() };
+                let id2 = id.clone();
+                return Task::perform(
+                    async move {
+                        let pw = secret(secrets::imap_key(&acc.id)).await?;
+                        // Return the trimmed name so the note shows it decoded.
+                        crate::imap::create_folder(&acc, &pw, &name).await?;
+                        Ok::<String, anyhow::Error>(name)
+                    },
+                    move |r| match r {
+                        Ok(name) => Msg::FolderCreated(id2.clone(), name),
+                        Err(e) => Msg::Remote(Err(err(e))),
+                    },
+                );
+            }
+            Msg::FolderCreated(id, name) => {
+                self.new_folder = None;
+                self.status = Some(Ok(format!("Folder \"{}\" created.", crate::imap::decode_folder_name(&name))));
+                if let Some(acc) = self.account(&id).cloned() {
+                    return self.sync(acc);
+                }
+            }
             Msg::DismissStatus => self.status = None,
 
             // ---- compose ----
@@ -1593,6 +1662,26 @@ impl App {
             Msg::AddrDropHover(field) => {
                 if let Screen::Compose(c) = &mut self.screen {
                     c.addr_drop = Some(field);
+                }
+            }
+            Msg::DroppedOn(key) => {
+                // The release happened over a folder: move the dragged mail,
+                // even if the streamed cursor events never activated the drag
+                // (fast drags lose `CursorMoved` messages). A click releases
+                // over the row itself, so this only fires on real drops.
+                let Some(d) = self.drag.take() else { return Task::none() };
+                let Some((account, folder)) = key.split_once('\u{1f}') else { return Task::none() };
+                return self.move_to(&d.ids, account.to_string(), folder.to_string());
+            }
+            Msg::AddrDropped(target) => {
+                if let Screen::Compose(c) = &mut self.screen {
+                    if c.addr_drag.as_ref().is_some_and(|d| target != d.field) {
+                        let d = c.addr_drag.take().expect("drag present");
+                        addr_move(c, d.field, d.idx, target);
+                        return operation::focus(addr_input_id(target));
+                    }
+                    // Same line: leave the drag for the global MouseUp
+                    // (a click then pulls the chip in for editing).
                 }
             }
             Msg::AddrDropLeft(field) => {
@@ -1997,6 +2086,7 @@ impl App {
     fn on_key(&mut self, key: Key, mods: keyboard::Modifiers) -> Task<Msg> {
         let cmd = mods.command();
         match (&self.screen, key.as_ref()) {
+            (_, Key::Named(Named::Escape)) if self.new_folder.is_some() => self.update(Msg::NewFolderCancel),
             (_, Key::Named(Named::Escape)) if !matches!(self.screen, Screen::Mail) => self.update(Msg::CloseScreen),
             (_, Key::Named(Named::Escape)) if self.results => self.update(Msg::ClearQuery),
             (Screen::Compose(_), Key::Named(Named::Enter)) if cmd => self.update(Msg::Send),

@@ -31,6 +31,8 @@ pub struct Run {
     pub strike: bool,
     /// Background highlight (e.g. `<mark>`, `background-color`) as RGB.
     pub mark: Option<[u8; 3]>,
+    /// Foreground text colour (`color:`, `<font color>`) as RGB.
+    pub text_color: Option<[u8; 3]>,
     /// `src` of an <img>; `text` holds its alt text.
     pub image: Option<String>,
 }
@@ -132,6 +134,7 @@ pub fn html_runs(html: &str) -> Vec<Run> {
                     A::Code | A::Preformat(_) => r.code = true,
                     A::Strikeout => r.strike = true,
                     A::BgColour(c) => r.mark = Some([c.r, c.g, c.b]),
+                    A::Colour(c) => r.text_color = Some([c.r, c.g, c.b]),
                     _ => {}
                 }
             }
@@ -212,6 +215,8 @@ pub enum Hl {
     Code,
     /// Background highlight from the HTML, as the original RGB.
     Mark([u8; 3]),
+    /// Text colour from the HTML, as the original RGB.
+    Colour([u8; 3]),
     Muted,
 }
 
@@ -309,6 +314,8 @@ pub fn blocks(runs: &[Run], available: impl Fn(&str) -> bool) -> Vec<Block> {
             Some(Hl::Link)
         } else if let Some(rgb) = r.mark {
             Some(Hl::Mark(rgb))
+        } else if let Some(rgb) = r.text_color {
+            Some(Hl::Colour(rgb))
         } else if r.code {
             Some(Hl::Code)
         } else if r.strong {

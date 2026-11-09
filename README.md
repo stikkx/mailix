@@ -13,10 +13,10 @@ A fast, lightweight, IMAP-first desktop mail client in Rust for Linux, macOS and
 - **Follows the OS** light/dark setting live
 - **Address book** with LDAP and Google Contacts sync, plus autocomplete from people you've emailed
 - **Proton Mail** via Proton Bridge (preset included)
-- **HTML mail** shown formatted in-app with embedded images and background highlights (as tinted text);
-  remote images (tracking pixels) are blocked until you click "Show images". Mail text is selectable and
-  copyable (Ctrl+C); Ctrl+click opens links. "Open in browser" shows the original layout with scripts and
-  remote content blocked.
+- **HTML mail** shown formatted in-app with embedded images and colour markings (background highlights
+  and text colours, shown as tinted text); remote images (tracking pixels) are blocked until you click
+  "Show images". Mail text is selectable and copyable (Ctrl+C); Ctrl+click opens links. "Open in browser"
+  shows the original layout with scripts and remote content blocked.
 - **Formatting editor**: bold, italic, underline, strikethrough, lists, quotes, links (toolbar or
   Ctrl+B/I/U/K). Sent as HTML with a plain-text alternative; unformatted mail stays plain text.
 - **Grammar & spelling** (German and English, optional): LanguageTool marks mistakes in red while you
@@ -26,6 +26,7 @@ A fast, lightweight, IMAP-first desktop mail client in Rust for Linux, macOS and
 - **Drag & drop**: drag a mail onto a folder to move it; dragging a conversation's top row moves the
   whole conversation; recipients are chips — drag one between the To/Cc/Bcc lines, click to edit it, ×
   to remove. Display names with commas (e.g. "Rueter, Marc <…>") are handled everywhere
+- **Folders**: create a folder with the folder-plus button next to an account; Enter creates it, Esc cancels
 - **Drafts**: leaving the composer (Esc, clicking a folder or mail) or 30 s of typing saves the message to
   the server's Drafts folder; **Edit** in the Drafts folder continues it; Discard deletes it
 - **Attachments**: open/save received files, attach files (picker or drag & drop), forward with attachments

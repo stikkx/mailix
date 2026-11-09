@@ -616,6 +616,14 @@ async fn purge_draft(
 }
 
 /// Opens a connection and logs in — used by "Test connection" in settings.
+/// Creates a new folder on the server (IMAP CREATE).
+pub async fn create_folder(acc: &AccountConfig, password: &str, name: &str) -> Result<()> {
+    let mut s = connect(acc, password).await?;
+    s.create(name).await?;
+    s.logout().await.ok();
+    Ok(())
+}
+
 pub async fn test(acc: &AccountConfig, password: &str) -> Result<()> {
     let mut s = connect(acc, password).await?;
     s.logout().await.ok();
@@ -642,6 +650,32 @@ mod tests {
     ///   -e GREENMAIL_OPTS="-Dgreenmail.setup.test.all -Dgreenmail.hostname=0.0.0.0 \
     ///   -Dgreenmail.users=test:secret@localhost -Dgreenmail.auth.disabled=false" greenmail/standalone:2.1.3`
     /// then `cargo test -- --ignored e2e`
+    /// Creating a folder: server LIST must show it afterwards.
+    #[tokio::test]
+    #[ignore]
+    async fn e2e_create_folder() {
+        use crate::config::{Preset, Security, ServerConfig};
+        rustls::crypto::ring::default_provider().install_default().ok();
+        let mut acc = AccountConfig::from_preset(Preset::Generic, "test@localhost");
+        acc.imap = ServerConfig {
+            host: "127.0.0.1".into(),
+            port: 3143,
+            security: Security::Plain,
+            username: "test".into(),
+            accept_invalid_certs: true,
+        };
+        acc.save_sent_copy = false;
+
+        let tag = crate::config::new_id();
+        let name = format!("Created-{}", &tag[..6]);
+        create_folder(&acc, "secret", &name).await.unwrap();
+        // A plain LIST must contain the new folder.
+        let mut s = connect(&acc, "secret").await.unwrap();
+        let boxes = s.list(Some("".into()), Some("*".into())).await.unwrap().try_collect::<Vec<_>>().await.unwrap();
+        s.logout().await.ok();
+        assert!(boxes.iter().any(|b| b.name().eq_ignore_ascii_case(&name)), "{boxes:?}");
+    }
+
     #[tokio::test]
     #[ignore]
     async fn e2e_greenmail() {

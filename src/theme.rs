@@ -60,10 +60,11 @@ pub fn muted(theme: &Theme) -> Color {
 }
 
 /// Text colour for a background highlight in HTML mail (`<mark>`,
-/// `background-color`): it keeps the original hue but is pushed far enough
-/// from the theme background to stay readable. `None` for neutral
-/// backgrounds (white/grey/black) that carry no visible marking.
-pub fn marked_text(rgb: [u8; 3], theme: &Theme) -> Option<Color> {
+/// `background-color`) or a text colour from the HTML (`color:`): it keeps
+/// the original hue but is pushed far enough from the theme background to
+/// stay readable. `None` for neutral colours (white/grey/black) that carry
+/// no visible marking.
+pub fn text_ink(rgb: [u8; 3], theme: &Theme) -> Option<Color> {
     let (h, s, l) = rgb_to_hsl(rgb);
     if s < 0.2 {
         return None;
@@ -374,19 +375,19 @@ mod tests {
     #[test]
     fn mark_tint_keeps_hue_and_adapts() {
         let yellow = [0xff, 0xff, 0x00];
-        let light = marked_text(yellow, &build(Mode::Light, "#000000")).unwrap();
+        let light = text_ink(yellow, &build(Mode::Light, "#000000")).unwrap();
         assert!(light.b < 0.2 && light.r > 0.55, "{light:?}");
         assert!((0.4..0.8).contains(&luminance(light)), "{light:?}");
-        let dark = marked_text(yellow, &build(Mode::Dark, "#000000")).unwrap();
+        let dark = text_ink(yellow, &build(Mode::Dark, "#000000")).unwrap();
         assert!(luminance(dark) >= 0.55, "{dark:?}");
     }
 
     #[test]
     fn mark_tint_skips_neutrals() {
-        assert!(marked_text([0xf2, 0xf2, 0xf2], &build(Mode::Light, "#000000")).is_none());
-        assert!(marked_text([17, 17, 17], &build(Mode::Light, "#000000")).is_none());
+        assert!(text_ink([0xf2, 0xf2, 0xf2], &build(Mode::Light, "#000000")).is_none());
+        assert!(text_ink([17, 17, 17], &build(Mode::Light, "#000000")).is_none());
         // A pale yellow highlight still counts.
-        assert!(marked_text([0xfb, 0xed, 0x7c], &build(Mode::Light, "#000000")).is_some());
+        assert!(text_ink([0xfb, 0xed, 0x7c], &build(Mode::Light, "#000000")).is_some());
     }
 
     #[test]
