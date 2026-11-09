@@ -24,7 +24,8 @@ A fast, lightweight, IMAP-first desktop mail client in Rust for Linux, macOS and
   (`docker run -d -p 8010:8010 erikvl87/languagetool`, copied to the clipboard from Settings → General)
   to keep your text on your machine
 - **Drag & drop**: drag a mail onto a folder to move it; dragging a conversation's top row moves the
-  whole conversation
+  whole conversation; recipients are chips — drag one between the To/Cc/Bcc lines, click to edit it, ×
+  to remove. Display names with commas (e.g. "Rueter, Marc <…>") are handled everywhere
 - **Drafts**: leaving the composer (Esc, clicking a folder or mail) or 30 s of typing saves the message to
   the server's Drafts folder; **Edit** in the Drafts folder continues it; Discard deletes it
 - **Attachments**: open/save received files, attach files (picker or drag & drop), forward with attachments

@@ -393,37 +393,42 @@ impl App {
             .into();
         // Same widget structure with or without a drag, so scroll positions
         // and text selection survive it.
-        let drag = self.drag.as_ref().filter(|d| d.active);
-        let floating: El<'_> = match drag {
-            None => Space::new().into(),
-            Some(d) => {
-                // Label following the cursor while mail is dragged onto a folder.
-                let n = d.ids.len();
-                let what = if n == 1 {
-                    self.list.iter().find(|s| Some(&s.id) == d.ids.first()).map(|s| s.subject.clone()).unwrap_or_default()
-                } else {
-                    format!("{n} messages")
-                };
-                let target = self.hovered.as_deref().and_then(|k| k.split_once('\u{1f}')).map(|(_, f)| display_folder(f));
-                let label = match target {
-                    Some(f) => format!("Move to {f}"),
-                    None => "Drop on a folder".to_string(),
-                };
-                let chip = container(
-                    column![text(label).font(SEMIBOLD).size(12), muted(what).size(12).wrapping(text::Wrapping::None)]
-                        .spacing(2),
-                )
-                .padding([6, 10])
-                .max_width(280)
-                .clip(true)
-                .style(theme::boxed);
-                container(chip)
-                    .padding(iced::Padding { top: d.pos.y + 14.0, left: d.pos.x + 14.0, ..Default::default() })
-                    .into()
-            }
+        let compose = match &self.screen { Screen::Compose(c) => Some(&**c), _ => None };
+        let mail = self.drag.as_ref().filter(|d| d.active);
+        let addr = compose.and_then(|c| c.addr_drag.as_ref().filter(|d| d.active));
+        let floating: El<'_> = if let Some(d) = mail {
+            // Label following the cursor while mail is dragged onto a folder.
+            let n = d.ids.len();
+            let what = if n == 1 {
+                self.list.iter().find(|s| Some(&s.id) == d.ids.first()).map(|s| s.subject.clone()).unwrap_or_default()
+            } else {
+                format!("{n} messages")
+            };
+            let target = self.hovered.as_deref().and_then(|k| k.split_once('\u{1f}')).map(|(_, f)| display_folder(f));
+            let label = match target {
+                Some(f) => format!("Move to {f}"),
+                None => "Drop on a folder".to_string(),
+            };
+            app_drag_chip(label, Some(what), d.pos)
+        } else if let Some(d) = addr {
+            let c = compose.unwrap();
+            let text = match d.field {
+                Field::To => c.to.clone(),
+                Field::Cc => c.cc.clone(),
+                Field::Bcc => c.bcc.clone(),
+            };
+            let (chips, _) = crate::app::addr_parts(&text);
+            let what = chips.get(d.idx).copied().unwrap_or_default().to_string();
+            let label = match c.addr_drop {
+                Some(f) => format!("Move to {}", match f { Field::To => "To", Field::Cc => "Cc", Field::Bcc => "Bcc" }),
+                None => "Drop on a recipient line".to_string(),
+            };
+            app_drag_chip(label, Some(what), d.pos)
+        } else {
+            Space::new().into()
         };
         let mut root = iced::widget::mouse_area(iced::widget::stack![app, floating]);
-        if drag.is_some() {
+        if mail.is_some() || addr.is_some() {
             root = root.interaction(iced::mouse::Interaction::Grabbing);
         }
         root.into()
@@ -1233,17 +1238,71 @@ impl App {
                 .into()
         };
         let field = |value: &'a str, f: Field| -> El<'a> {
-            text_input("", value)
-                .id(match f {
-                    Field::To => COMPOSE_TO_ID,
-                    Field::Cc => "compose-cc",
-                    Field::Bcc => "compose-bcc",
-                })
-                .on_input(move |v| Msg::ComposeField(f, v))
-                .padding([6, 0])
-                .size(14)
-                .style(theme::bare_input)
-                .into()
+            let (chips, tail) = crate::app::addr_parts(value);
+            let mut row_chips = Row::new().spacing(6);
+            for (i, item) in chips.iter().enumerate() {
+                row_chips = row_chips.push(
+                    iced::widget::mouse_area(
+                        container(
+                            row![
+                                container(text(item.trim()).size(13)).max_width(260).clip(true),
+                                button(icon(ic::CLOSE, 11)).padding([0, 3]).style(theme::link).on_press(Msg::RemoveAddr(f, i)),
+                            ]
+                            .spacing(6)
+                            .align_y(Alignment::Center),
+                        )
+                        .padding([3, 8])
+                        .style(theme::boxed),
+                    )
+                    .on_enter(Msg::AddrChipHover(Some((f, i))))
+                    .on_exit(Msg::AddrChipLeft(f, i)),
+                );
+            }
+            row![
+                row_chips,
+                text_input("", tail)
+                    .id(match f {
+                        Field::To => COMPOSE_TO_ID,
+                        Field::Cc => "compose-cc",
+                        Field::Bcc => "compose-bcc",
+                    })
+                    .on_input(move |v| Msg::ComposeField(f, v))
+                    .on_submit(Msg::CommitField(f))
+                    .padding([6, 0])
+                    .size(14)
+                    .style(theme::bare_input)
+                    .width(Fill),
+            ]
+            .align_y(Alignment::Center)
+            .into()
+        };
+        // Recipient lines accept a dragged chip: highlight the one under the
+        // cursor while a drag is going on.
+        let drag_active = matches!(&c.addr_drag, Some(d) if d.active);
+        let drop_line = |target: Field, label: &'a str, content: El<'a>| -> El<'a> {
+            let hot = drag_active && c.addr_drop == Some(target);
+            iced::widget::mouse_area(
+                container(
+                    row![muted(label).size(13).width(LABEL_W), content].align_y(Alignment::Center),
+                )
+                .padding([4, 16])
+                .height(44)
+                .align_y(iced::alignment::Vertical::Center)
+                .style(move |t: &iced::Theme| {
+                    if hot {
+                        container::Style {
+                            background: Some(t.extended_palette().background.weak.color.into()),
+                            border: iced::Border { color: t.palette().primary, width: 1.0, radius: 0.0.into() },
+                            ..Default::default()
+                        }
+                    } else {
+                        container::Style::default()
+                    }
+                }),
+            )
+            .on_enter(Msg::AddrDropHover(target))
+            .on_exit(Msg::AddrDropLeft(target))
+            .into()
         };
 
         let mut form = column![
@@ -1255,7 +1314,8 @@ impl App {
                     .into()
             ),
             hr(),
-            line(
+            drop_line(
+                Field::To,
                 "To",
                 row![
                     field(&c.to, Field::To),
@@ -1264,22 +1324,24 @@ impl App {
                         .style(theme::tool)
                         .on_press(Msg::ToggleCc)
                 ]
+                .width(Fill)
+                .spacing(8)
                 .align_y(Alignment::Center)
                 .into()
             ),
             hr(),
         ];
         if c.show_cc {
-            form = form.push(line("Cc", field(&c.cc, Field::Cc)));
+            form = form.push(drop_line(Field::Cc, "Cc", field(&c.cc, Field::Cc)));
             form = form.push(hr());
-            form = form.push(line("Bcc", field(&c.bcc, Field::Bcc)));
+            form = form.push(drop_line(Field::Bcc, "Bcc", field(&c.bcc, Field::Bcc)));
             form = form.push(hr());
         }
         if !c.suggestions.is_empty() {
             let target = if c.show_cc && !c.cc.is_empty() && c.cc.len() > c.to.len() { Field::Cc } else { Field::To };
             let mut sug = Column::new();
             for s in &c.suggestions {
-                let label = if s.name.is_empty() { s.email.clone() } else { format!("{} <{}>", s.name, s.email) };
+                let label = if s.name.is_empty() { s.email.clone() } else { crate::smtp::mailbox_text(&s.name, &s.email) };
                 sug = sug.push(
                     button(row![text(label.clone()).size(13).width(Fill), muted(&s.source).size(11)])
                         .width(Fill)
@@ -2191,6 +2253,18 @@ fn folder_path(name: &str) -> String {
         _ => &parts[..],
     };
     parts.join(" › ")
+}
+
+/// The floating label following the cursor during a drag (mail or recipient).
+fn app_drag_chip<'a>(label: String, what: Option<String>, pos: iced::Point) -> El<'a> {
+    let mut body = column![text(label).font(SEMIBOLD).size(12).wrapping(text::Wrapping::None)].spacing(2);
+    if let Some(what) = what {
+        body = body.push(muted(what).size(12).wrapping(text::Wrapping::None));
+    }
+    let chip = container(body).padding([6, 10]).max_width(280).clip(true).style(theme::boxed);
+    container(chip)
+        .padding(iced::Padding { top: pos.y + 14.0, left: pos.x + 14.0, ..Default::default() })
+        .into()
 }
 
 fn display_folder(name: &str) -> String {

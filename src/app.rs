@@ -66,6 +66,18 @@ pub struct Drag {
     pub active: bool,
 }
 
+/// A recipient chip being dragged between the To/Cc/Bcc lines.
+#[derive(Debug, Clone, Copy)]
+pub struct AddrDrag {
+    pub field: Field,
+    pub idx: usize,
+    /// First cursor position after the press.
+    pub start: Option<iced::Point>,
+    pub pos: iced::Point,
+    /// Moved far enough to count as a drag (not a click).
+    pub active: bool,
+}
+
 pub enum Screen {
     Mail,
     Compose(Box<Compose>),
@@ -102,6 +114,12 @@ pub struct Compose {
     pub draft_uid: Option<u32>,
     /// Fingerprint of the last saved state (skip unchanged saves).
     pub saved_hash: u64,
+    /// Recipient chip under the mouse (drag starts there).
+    pub addr_hover: Option<(Field, usize)>,
+    /// Recipient chip being dragged between the recipient lines.
+    pub addr_drag: Option<AddrDrag>,
+    /// Recipient line under the cursor while a chip is dragged.
+    pub addr_drop: Option<Field>,
     pub grammar: GrammarState,
     /// Bumped on every edit so the formatting highlighter re-runs.
     pub revision: u64,
@@ -300,6 +318,17 @@ pub enum Msg {
     EditDraft,
     ComposeField(Field, String),
     PickSuggestion(Field, String),
+    /// Hover a recipient chip (drag may start here).
+    AddrChipHover(Option<(Field, usize)>),
+    /// Leave a recipient chip (matched, like UnhoverRow).
+    AddrChipLeft(Field, usize),
+    /// A recipient line is a drop target while a chip is dragged.
+    AddrDropHover(Field),
+    AddrDropLeft(Field),
+    /// Remove a recipient chip.
+    RemoveAddr(Field, usize),
+    /// Turn the text being typed into a chip (Enter in a recipient input).
+    CommitField(Field),
     ComposeSubject(String),
     ComposeBody(text_editor::Action),
     GrammarTick,
@@ -541,7 +570,8 @@ impl App {
             iced::Event::Mouse(iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left)) => Some(Msg::MouseUp),
             _ => None,
         }));
-        if self.drag.is_some() {
+        let addr_drag = matches!(&self.screen, Screen::Compose(c) if c.addr_drag.is_some());
+        if self.drag.is_some() || addr_drag {
             subs.push(iced::event::listen_with(|e, _, _| match e {
                 iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => Some(Msg::MouseMoved(position)),
                 _ => None,
@@ -812,6 +842,9 @@ impl App {
             draft_folder: None,
             draft_uid: None,
             saved_hash: 0,
+            addr_hover: None,
+            addr_drag: None,
+            addr_drop: None,
             grammar: GrammarState::default(),
             revision: 0,
         }
@@ -1079,6 +1112,19 @@ impl App {
                 }
             }
             Msg::MouseDown => {
+                if let Screen::Compose(c) = &mut self.screen {
+                    if c.addr_drag.is_none() {
+                        if let Some((field, idx)) = c.addr_hover {
+                            c.addr_drag = Some(AddrDrag {
+                                field,
+                                idx,
+                                start: None,
+                                pos: iced::Point::ORIGIN,
+                                active: false,
+                            });
+                        }
+                    }
+                }
                 self.drag = match (self.hover_row, &self.screen) {
                     (Some(id), Screen::Mail) => Some(Drag { ids: self.drag_ids(id), start: None, pos: iced::Point::ORIGIN, active: false }),
                     _ => None,
@@ -1093,8 +1139,34 @@ impl App {
                     }
                     d.pos = p;
                 }
+                if let Screen::Compose(c) = &mut self.screen {
+                    if let Some(d) = &mut c.addr_drag {
+                        match d.start {
+                            None => d.start = Some(p),
+                            Some(s) if !d.active && s.distance(p) > 6.0 => d.active = true,
+                            _ => {}
+                        }
+                        d.pos = p;
+                    }
+                }
             }
             Msg::MouseUp => {
+                if let Screen::Compose(c) = &mut self.screen {
+                    if let Some(d) = c.addr_drag.take() {
+                        if !d.active {
+                            // A click pulls the chip back into the input for editing.
+                            addr_edit(c, d.field, d.idx);
+                            return operation::focus(addr_input_id(d.field));
+                        }
+                        if let Some(target) = c.addr_drop.take() {
+                            if target != d.field {
+                                addr_move(c, d.field, d.idx, target);
+                                return operation::focus(addr_input_id(target));
+                            }
+                        }
+                        return Task::none();
+                    }
+                }
                 let Some(d) = self.drag.take() else { return Task::none() };
                 if !d.active {
                     return Task::none();
@@ -1485,22 +1557,68 @@ impl App {
                 }
             }
             Msg::ComposeField(field, v) => {
-                let last = v.rsplit([',', ';']).next().unwrap_or("").trim().to_string();
-                let suggestions =
-                    if last.len() >= 2 { self.store.find_contacts(&last, 6).unwrap_or_default() } else { Vec::new() };
+                let v = v.trim().to_string();
+                let suggestions = if v.len() >= 2 { self.store.find_contacts(&v, 6).unwrap_or_default() } else { Vec::new() };
                 if let Screen::Compose(c) = &mut self.screen {
-                    *field_mut(c, field) = v;
+                    // Only the tail is being edited; chips stay as they are.
+                    let (chips, _) = addr_parts_owned(field_mut(c, field));
+                    *field_mut(c, field) = addr_text(&chips, &v);
                     c.suggestions = suggestions;
                 }
             }
             Msg::PickSuggestion(field, addr) => {
                 if let Screen::Compose(c) = &mut self.screen {
                     let f = field_mut(c, field);
-                    let keep = match f.rfind([',', ';']) {
-                        Some(i) => format!("{}, ", f[..i].trim_end()),
-                        None => String::new(),
-                    };
-                    *f = format!("{keep}{addr}, ");
+                    let (mut chips, tail) = addr_parts_owned(f);
+                    if !tail.trim().is_empty() {
+                        chips.push(tail);
+                    }
+                    chips.push(addr);
+                    *f = addr_text(&chips, "");
+                    c.suggestions.clear();
+                }
+            }
+            Msg::AddrChipHover(h) => {
+                if let Screen::Compose(c) = &mut self.screen {
+                    c.addr_hover = h;
+                }
+            }
+            Msg::AddrChipLeft(field, idx) => {
+                if let Screen::Compose(c) = &mut self.screen {
+                    if c.addr_hover == Some((field, idx)) {
+                        c.addr_hover = None;
+                    }
+                }
+            }
+            Msg::AddrDropHover(field) => {
+                if let Screen::Compose(c) = &mut self.screen {
+                    c.addr_drop = Some(field);
+                }
+            }
+            Msg::AddrDropLeft(field) => {
+                if let Screen::Compose(c) = &mut self.screen {
+                    if c.addr_drop == Some(field) {
+                        c.addr_drop = None;
+                    }
+                }
+            }
+            Msg::RemoveAddr(field, idx) => {
+                if let Screen::Compose(c) = &mut self.screen {
+                    let (mut chips, tail) = addr_parts_owned(field_mut(c, field));
+                    if idx < chips.len() {
+                        chips.remove(idx);
+                        *field_mut(c, field) = addr_text(&chips, &tail);
+                    }
+                }
+            }
+            Msg::CommitField(field) => {
+                if let Screen::Compose(c) = &mut self.screen {
+                    let f = field_mut(c, field);
+                    let (mut chips, tail) = addr_parts_owned(f);
+                    if !tail.trim().is_empty() {
+                        chips.push(tail);
+                    }
+                    *f = addr_text(&chips, "");
                     c.suggestions.clear();
                 }
             }
@@ -2507,8 +2625,102 @@ fn field_mut(c: &mut Compose, f: Field) -> &mut String {
     }
 }
 
+fn addr_input_id(f: Field) -> iced::widget::Id {
+    match f {
+        Field::To => iced::widget::Id::new(COMPOSE_TO_ID),
+        Field::Cc => iced::widget::Id::new("compose-cc"),
+        Field::Bcc => iced::widget::Id::new("compose-bcc"),
+    }
+}
+
+// ---- composer recipient chips ----------------------------------------------
+
+/// The chips to render plus the tail the input shows (the tail is "" once the
+/// text ends with a separator, i.e. after a commit).
+pub fn addr_parts(text: &str) -> (Vec<&str>, &str) {
+    let mut all = crate::smtp::split_recipients(text);
+    if text.trim_end().ends_with([',', ';']) {
+        (all, "")
+    } else {
+        let tail = all.pop().unwrap_or("");
+        (all, tail)
+    }
+}
+
+fn addr_parts_owned(text: &str) -> (Vec<String>, String) {
+    let (chips, tail) = addr_parts(text);
+    (chips.iter().map(|s| s.to_string()).collect(), tail.to_string())
+}
+
+/// Rebuilds a recipient field text from chips and an in-progress tail.
+pub fn addr_text(chips: &[String], tail: &str) -> String {
+    let mut parts: Vec<String> = chips.to_vec();
+    let tail = tail.trim();
+    if !tail.is_empty() {
+        parts.push(tail.to_string());
+    }
+    if parts.is_empty() {
+        String::new()
+    } else if tail.is_empty() {
+        format!("{}, ", parts.join(", "))
+    } else {
+        parts.join(", ")
+    }
+}
+
+/// Moves chip `idx` from `src` to the end of `dst` (pure, for tests).
+fn addr_move_parts(src: &str, dst: &str, idx: usize) -> Option<(String, String)> {
+    let (chips, tail) = addr_parts(src);
+    let moved = chips.get(idx)?.to_string();
+    let rest: Vec<String> =
+        chips.iter().enumerate().filter(|(i, _)| *i != idx).map(|(_, s)| s.to_string()).collect();
+    let (dst_chips, dst_tail) = addr_parts(dst);
+    let mut dchips: Vec<String> = dst_chips.iter().map(|s| s.to_string()).collect();
+    if !dst_tail.trim().is_empty() {
+        dchips.push(dst_tail.to_string());
+    }
+    dchips.push(moved);
+    Some((addr_text(&rest, &tail), addr_text(&dchips, "")))
+}
+
+/// A click pulls a chip back into the tail for editing (pure). An in-progress
+/// tail is committed first.
+fn addr_edit_parts(src: &str, idx: usize) -> Option<String> {
+    let (chips, tail) = addr_parts(src);
+    if idx >= chips.len() {
+        return None;
+    }
+    let mut chips: Vec<String> = chips.iter().map(|s| s.to_string()).collect();
+    let moved = chips.remove(idx);
+    let tail = tail.to_string();
+    if !tail.trim().is_empty() {
+        chips.push(tail);
+    }
+    Some(addr_text(&chips, &moved))
+}
+
+/// Drag a chip onto another recipient line.
+fn addr_move(c: &mut Compose, from: Field, idx: usize, to: Field) {
+    if from == to {
+        return;
+    }
+    let (src_text, dst_text) = (field_mut(c, from).clone(), field_mut(c, to).clone());
+    let Some((new_src, new_dst)) = addr_move_parts(&src_text, &dst_text, idx) else { return };
+    *field_mut(c, from) = new_src;
+    *field_mut(c, to) = new_dst;
+    c.addr_hover = None;
+    c.addr_drop = None;
+}
+
+/// A click pulls a chip back into the input for editing (the tail).
+fn addr_edit(c: &mut Compose, field: Field, idx: usize) {
+    let Some(text) = addr_edit_parts(field_mut(c, field), idx) else { return };
+    *field_mut(c, field) = text;
+    c.addr_hover = None;
+}
+
 fn sender(s: &Summary) -> String {
-    if s.from_name.is_empty() { s.from_addr.clone() } else { format!("{} <{}>", s.from_name, s.from_addr) }
+    if s.from_name.is_empty() { s.from_addr.clone() } else { crate::smtp::mailbox_text(&s.from_name, &s.from_addr) }
 }
 
 fn prefixed(prefix: &str, subject: &str) -> String {
@@ -2555,5 +2767,44 @@ mod tests {
         assert_eq!(prefixed("Re: ", "RE: Hello"), "RE: Hello");
         assert_eq!(prefixed("Re: ", "AW: Hallo"), "AW: Hallo");
         assert_eq!(prefixed("Fwd: ", "Hello"), "Fwd: Hello");
+    }
+
+    #[test]
+    fn addr_chips_roundtrip() {
+        assert_eq!(addr_text(&[], "a@b"), "a@b");
+        assert_eq!(addr_text(&["a@b".to_string()], ""), "a@b, ");
+        assert_eq!(addr_text(&["\"a, b\" <a@b>".to_string()], "c@d"), "\"a, b\" <a@b>, c@d");
+
+        let (chips, tail) = addr_parts("\"a, b\" <a@b>, c");
+        assert_eq!(chips, vec!["\"a, b\" <a@b>"]);
+        assert_eq!(tail, "c");
+        // After a commit (trailing separator) the input is empty.
+        let (chips, tail) = addr_parts("a@b, c@d, ");
+        assert_eq!(chips, vec!["a@b", "c@d"]);
+        assert_eq!(tail, "");
+        // Typing continues into the tail without disturbing the chips.
+        assert_eq!(addr_text(&["a@b".to_string()], "c"), "a@b, c");
+    }
+
+    #[test]
+    fn addr_move_between_lines() {
+        let (src, dst) = addr_move_parts("a@b, c@d, ", "x@y", 0).unwrap();
+        assert_eq!(src, "c@d, ");
+        assert_eq!(dst, "x@y, a@b, ");
+        // Moving the only chip empties its line; the target had no tail.
+        let (src, dst) = addr_move_parts("a@b, ", "", 0).unwrap();
+        assert_eq!(src, "");
+        assert_eq!(dst, "a@b, ");
+        assert!(addr_move_parts("a@b", "x@y", 5).is_none());
+    }
+
+    #[test]
+    fn addr_edit_pulls_chip() {
+        // Pull the last chip: it becomes the tail, still part of the text.
+        assert_eq!(addr_edit_parts("a@b, c@d, ", 1).unwrap(), "a@b, c@d");
+        // Pull the first chip while a tail is being typed: the tail commits first.
+        assert_eq!(addr_edit_parts("a@b, x@y", 0).unwrap(), "x@y, a@b");
+        // A field still being typed has no chips to pull.
+        assert!(addr_edit_parts("a@b", 0).is_none());
     }
 }

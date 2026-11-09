@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 use lettre::message::{Attachment, Mailbox, MultiPart, SinglePart, header::ContentType};
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::transport::smtp::client::{Tls, TlsParameters};
-use lettre::{AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
+use lettre::{Address, AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
 
 #[derive(Debug, Clone, Default)]
 pub struct Outgoing {
@@ -27,12 +27,102 @@ fn content_type(mime: &str) -> ContentType {
     ContentType::parse(mime).unwrap_or_else(|_| ContentType::parse("application/octet-stream").unwrap())
 }
 
+/// A recipient list like `Rueter, Marc <marc@host>, a@b`: items are split at
+/// commas and semicolons that sit outside angle brackets and quoted display
+/// names. A leading fragment with no `@` and no `<` keeps consuming commas —
+/// that is an unquoted display name ("Rueter, Marc <…>" from a reply header);
+/// such a fragment before a plain address or at the end of the list makes the
+/// item invalid on purpose, so half-typed input surfaces as an error.
+pub fn split_recipients(s: &str) -> Vec<&str> {
+    let mut items = Vec::new();
+    let mut start = 0;
+    let mut angle = 0usize;
+    let mut quote = false;
+    let mut name_only = true;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '"' if angle == 0 => quote = !quote,
+            '<' if !quote => {
+                angle += 1;
+                name_only = false;
+            }
+            '>' if !quote && angle > 0 => angle -= 1,
+            '@' if angle == 0 && !quote => name_only = false,
+            ',' | ';' if !quote && angle == 0 => {
+                if name_only && s[start..i].contains(|c: char| !c.is_whitespace()) {
+                    continue;
+                }
+                items.push(&s[start..i]);
+                start = i + 1;
+                name_only = true;
+            }
+            _ => {}
+        }
+    }
+    items.push(&s[start..]);
+    items.into_iter().map(str::trim).filter(|p| !p.is_empty()).collect()
+}
+
+/// Separates `Display Name <user@host>` into its parts, lenient about commas
+/// in the display name. `None` for a bare `user@host`.
+pub fn mailbox_parts(item: &str) -> (Option<String>, String) {
+    let item = item.trim();
+    if let (Some(open), Some(close)) = (item.rfind('<'), item.rfind('>')) {
+        if close > open {
+            let name = unquote_name(item[..open].trim());
+            let email = item[open + 1..close].trim().to_string();
+            return (((!name.is_empty())).then_some(name), email);
+        }
+    }
+    (None, item.to_string())
+}
+
+fn unquote_name(name: &str) -> String {
+    let s = name.trim();
+    let s = if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') { &s[1..s.len() - 1] } else { s };
+    // Unescape \" and \\ (in that order, via state machine).
+    let mut out = String::with_capacity(s.len());
+    let mut escaped = false;
+    for ch in s.chars() {
+        if escaped {
+            out.push(ch);
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else {
+            out.push(ch);
+        }
+    }
+    if escaped {
+        out.push('\\');
+    }
+    out
+}
+
+/// The text a composer field shows for one recipient: names containing
+/// separators are quoted ("Arning, Fabian <…>") so the text parses back.
+pub fn mailbox_text(name: &str, addr: &str) -> String {
+    if name.trim().is_empty() {
+        return addr.to_string();
+    }
+    if name.contains([',', ';', '"', '<', '>', '\\']) {
+        let quoted = name.replace('\\', "\\\\").replace('"', "\\\"");
+        format!("\"{quoted}\" <{addr}>")
+    } else {
+        format!("{name} <{addr}>")
+    }
+}
+
+fn parse_recipient(p: &str) -> Result<Mailbox> {
+    let (name, email) = mailbox_parts(p);
+    let address: Address = email
+        .parse()
+        .with_context(|| format!("invalid address: {}", p.trim()))?;
+    Ok(Mailbox::new(name, address))
+}
+
 pub fn parse_recipients(s: &str) -> Result<Vec<Mailbox>> {
-    s.split([',', ';'])
-        .map(str::trim)
-        .filter(|p| !p.is_empty())
-        .map(|p| p.parse::<Mailbox>().with_context(|| format!("invalid address: {p}")))
-        .collect()
+    split_recipients(s).into_iter().map(parse_recipient).collect()
 }
 
 /// Builds the RFC 5322 message. Returned separately so a copy can be
@@ -97,16 +187,11 @@ pub fn build_draft(acc: &AccountConfig, out: &Outgoing, message_id: &str, signat
     use mail_builder::headers::address::Address;
     use mail_builder::headers::text::Text;
     fn addrs(s: &str) -> Vec<Address<'static>> {
-        s.split([',', ';'])
-            .map(str::trim)
-            .filter(|p| !p.is_empty())
-            .map(|p| match p.rsplit_once('<') {
-                Some((name, rest)) => {
-                    let name = name.trim().trim_matches('"').to_string();
-                    let email = rest.trim_end_matches('>').trim().to_string();
-                    Address::new_address((!name.is_empty()).then_some(name), email)
-                }
-                None => Address::new_address(None::<String>, p.to_string()),
+        split_recipients(s)
+            .into_iter()
+            .map(|p| {
+                let (name, email) = mailbox_parts(p);
+                Address::new_address(name, email)
             })
             .collect()
     }
@@ -177,6 +262,62 @@ pub async fn send(acc: &AccountConfig, password: &str, msg: &lettre::Message) ->
 mod tests {
     use super::*;
     use crate::config::Preset;
+
+    #[test]
+    fn parses_display_names_with_separators() {
+        let list = "Rueter, Marc <marc.rueter@bega-consult.de>, \"Arning, Fabian; jr\" <arning@bega-consult.de>;carol@example.com";
+        let got = parse_recipients(list).unwrap();
+        let have: Vec<_> = got.iter().map(|m| (m.name.clone().unwrap_or_default(), m.email.to_string())).collect();
+        assert_eq!(
+            have,
+            vec![
+                ("Rueter, Marc".to_string(), "marc.rueter@bega-consult.de".to_string()),
+                ("Arning, Fabian; jr".to_string(), "arning@bega-consult.de".to_string()),
+                ("".to_string(), "carol@example.com".to_string()),
+            ],
+            "{got:?}"
+        );
+        assert!(parse_recipients("Rueter").is_err());
+        assert!(parse_recipients("a@b, <broken>").is_err());
+    }
+
+    #[test]
+    fn mailbox_text_quotes_names() {
+        assert_eq!(mailbox_text("Rueter, Marc", "a@b"), "\"Rueter, Marc\" <a@b>");
+        assert_eq!(mailbox_text("Marc \"M\" Rueter", "a@b"), "\"Marc \\\"M\\\" Rueter\" <a@b>");
+        assert_eq!(mailbox_text("Marc", "a@b"), "Marc <a@b>");
+        assert_eq!(mailbox_text("", "a@b"), "a@b");
+        // Roundtrip: text -> mailbox keeps the name with its comma.
+        let m = parse_recipients(&mailbox_text("Rueter, Marc", "a@b")).unwrap();
+        assert_eq!(m[0].name.as_deref(), Some("Rueter, Marc"));
+        assert_eq!(m[0].email.to_string(), "a@b");
+    }
+
+    #[test]
+    fn writes_quoted_names_to_headers() {
+        let acc = AccountConfig::from_preset(Preset::Generic, "me@example.com");
+        let out = Outgoing {
+            to: mailbox_text("Rueter, Marc", "marc.rueter@bega-consult.de"),
+            subject: "AW: Dispotool".into(),
+            body: "hi".into(),
+            ..Default::default()
+        };
+        let raw = String::from_utf8(build(&acc, &out).unwrap().formatted()).unwrap();
+        let folded = raw.replace("\r\n ", "").replace("\r\n\t", "");
+        // Quoted name is RFC 2047 encoded (=?utf-8?b?<base64>?=); decode it.
+        let enc = folded.split("To: ").nth(1).unwrap().split(" <").next().unwrap();
+        let payload = enc.trim().trim_start_matches("=?utf-8?b?").trim_end_matches("?=");
+        use base64::Engine;
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD.decode(payload).unwrap(),
+            b"Rueter, Marc",
+            "{raw}"
+        );
+        assert!(folded.contains("<marc.rueter@bega-consult.de>"), "{raw}");
+        // A saved draft keeps the name too.
+        let draft = String::from_utf8(build_draft(&acc, &out, "<id@x>", None).unwrap()).unwrap();
+        assert!(draft.contains("marc.rueter@bega-consult.de"), "{draft}");
+    }
 
     #[test]
     fn builds_reply() {
