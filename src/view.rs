@@ -1423,6 +1423,9 @@ impl App {
             form = form.push(container(chips.wrap().vertical_spacing(8)).padding([10, 16]));
             form = form.push(hr());
         }
+        if c.forward.is_some() {
+            form = form.push(container(muted("The forwarded mail will be sent with its images and formatting.").size(12)).padding(iced::Padding { top: 8.0, left: 16.0, right: 16.0, ..Default::default() }));
+        }
 
         let editor = text_editor(&c.body)
             .id(COMPOSE_BODY_ID)

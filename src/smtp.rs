@@ -183,7 +183,9 @@ pub fn build(acc: &AccountConfig, out: &Outgoing) -> Result<lettre::Message> {
 /// A draft as RFC 5322 bytes. Unlike `build` it accepts missing or
 /// half-typed recipients. The body is stored as composer markup so
 /// reopening keeps the formatting; `html` is for other mail programs.
-pub fn build_draft(acc: &AccountConfig, out: &Outgoing, message_id: &str, signature: Option<&str>) -> Result<Vec<u8>> {
+/// `forward` writes the source id of a rich forward, so reopening knows
+/// which stored message to re-load the HTML body and images from.
+pub fn build_draft(acc: &AccountConfig, out: &Outgoing, message_id: &str, signature: Option<&str>, forward: Option<i64>) -> Result<Vec<u8>> {
     use mail_builder::headers::address::Address;
     use mail_builder::headers::text::Text;
     fn addrs(s: &str) -> Vec<Address<'static>> {
@@ -228,6 +230,9 @@ pub fn build_draft(acc: &AccountConfig, out: &Outgoing, message_id: &str, signat
     }
     if let Some(sig) = signature {
         b = b.header("X-Mailix-Signature", Text::new(sig.to_string()));
+    }
+    if let Some(source) = forward {
+        b = b.header("X-Mailix-Forward", Text::new(source.to_string()));
     }
     if let Some(h) = &out.html {
         b = b.html_body(h.clone());
@@ -315,7 +320,7 @@ mod tests {
         );
         assert!(folded.contains("<marc.rueter@bega-consult.de>"), "{raw}");
         // A saved draft keeps the name too.
-        let draft = String::from_utf8(build_draft(&acc, &out, "<id@x>", None).unwrap()).unwrap();
+        let draft = String::from_utf8(build_draft(&acc, &out, "<id@x>", None, None).unwrap()).unwrap();
         assert!(draft.contains("marc.rueter@bega-consult.de"), "{draft}");
     }
 

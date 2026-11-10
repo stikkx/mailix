@@ -66,6 +66,38 @@ pub struct Drag {
     pub active: bool,
 }
 
+/// A rich forward: the original HTML body and its embedded images.
+#[derive(Debug, Clone)]
+pub struct ForwardPart {
+    /// Store id of the forwarded message (kept across draft save/reopen).
+    pub source: i64,
+    /// Original HTML body (references its images as `cid:`).
+    pub html: String,
+    /// The images referenced by that HTML, as inline parts.
+    pub images: Vec<Attachment>,
+}
+
+/// Builds the forward payload from a parsed message (None for plain mail).
+pub fn forward_payload(parsed: &Parsed, source: i64) -> Option<ForwardPart> {
+    let html = parsed.html.clone()?;
+    let images = parsed
+        .local_images()
+        .into_iter()
+        .map(|(src, data)| {
+            let cid = src.strip_prefix("cid:").unwrap_or(&src).to_string();
+            let known = parsed.attachments.iter().find(|a| a.content_id.as_deref() == Some(cid.as_str()));
+            Attachment {
+                name: known.map(|a| a.name.clone()).unwrap_or_else(|| cid.clone()),
+                mime: known.map(|a| a.mime.clone()).unwrap_or_else(|| "application/octet-stream".into()),
+                data: Arc::new(data),
+                content_id: Some(cid),
+                embedded: true,
+            }
+        })
+        .collect();
+    Some(ForwardPart { source, html, images })
+}
+
 /// A recipient chip being dragged between the To/Cc/Bcc lines.
 #[derive(Debug, Clone, Copy)]
 pub struct AddrDrag {
@@ -106,6 +138,8 @@ pub struct Compose {
     pub sending: bool,
     /// Preview of the selected signature: text and images in order.
     pub sig_preview: Vec<SigPart>,
+    /// Rich forward: HTML body + inline images of the forwarded message.
+    pub forward: Option<ForwardPart>,
     /// Message-ID of this draft; stays the same across saves.
     pub draft_id: String,
     /// Drafts folder holding a server copy (after a save, or when reopened).
@@ -854,6 +888,7 @@ impl App {
             attachments: Vec::new(),
             sending: false,
             sig_preview: sig_preview(acc, acc.and_then(|a| a.default_signature.as_deref())),
+            forward: None,
             draft_id: format!("<{:016x}.{:08x}@mailix>", rand::random::<u64>(), chrono::Utc::now().timestamp() as u32),
             draft_folder: None,
             draft_uid: None,
@@ -945,7 +980,7 @@ impl App {
             inline: Vec::new(),
         };
         let sig = c.signature.clone().unwrap_or_else(|| NO_SIGNATURE.to_string());
-        let raw = match smtp::build_draft(&acc, &out, &c.draft_id, Some(&sig)) {
+        let raw = match smtp::build_draft(&acc, &out, &c.draft_id, Some(&sig), c.forward.as_ref().map(|f| f.source)) {
             Ok(r) => r,
             Err(e) => {
                 self.status = Some(Err(format!("Could not save the draft: {e:#}")));
@@ -1516,6 +1551,7 @@ impl App {
                     m.body_text
                 );
                 c.original = Some(m.body_text.clone());
+                c.forward = self.parsed.as_ref().and_then(|p| forward_payload(p, m.summary.id));
                 c.attachments = self.parsed.as_ref().map(|p| p.files().map(|(_, a)| a.clone()).collect()).unwrap_or_default();
                 self.screen = Screen::Compose(Box::new(c));
                 return operation::focus(COMPOSE_TO_ID);
@@ -1596,17 +1632,38 @@ impl App {
                 }
                 c.draft_folder = Some(s.folder.clone());
                 c.draft_uid = Some(s.uid);
-                // Signature chosen when the draft was saved by Mailix.
-                let sig = self.store.raw(s.id).ok().flatten().and_then(|raw| {
-                    let msg = mail_parser::MessageParser::default().parse(&raw)?;
-                    let h = msg.headers();
-                    // Drafts saved before the rename carry the old header name.
-                    h.value("X-Mailix-Signature").or_else(|| h.value("X-Mailixx-Signature"))?.as_text()
-                        .map(|v| v.trim().to_string())
-                });
+                // Signature chosen when the draft was saved by Mailix, and
+                // a rich forward's source message, both carried as headers.
+                let (sig, fwd) = self
+                    .store
+                    .raw(s.id)
+                    .ok()
+                    .flatten()
+                    .and_then(|raw| {
+                        let msg = mail_parser::MessageParser::default().parse(&raw)?;
+                        let h = msg.headers();
+                        let sig = h
+                            .value("X-Mailix-Signature")
+                            .or_else(|| h.value("X-Mailixx-Signature"))
+                            .and_then(|v| v.as_text().map(|t| t.to_string()))
+                            .map(|v| v.trim().to_string());
+                        let fwd = h
+                            .value("X-Mailix-Forward")
+                            .and_then(|v| v.as_text().map(|t| t.to_string()))
+                            .and_then(|v| v.trim().parse::<i64>().ok());
+                        Some((sig, fwd))
+                    })
+                    .unwrap_or_default();
                 if let Some(name) = sig {
                     c.signature = (name != NO_SIGNATURE).then_some(name);
                     c.sig_preview = sig_preview(self.cfg.account(&s.account), c.signature.as_deref());
+                }
+                // Rich forward: reload the original message's HTML from the
+                // local cache (plain forward if it is gone).
+                if let Some(source) = fwd {
+                    if let Ok(Some(raw)) = self.store.raw(source) {
+                        c.forward = forward_payload(&mime::parse(&raw), source);
+                    }
                 }
                 c.saved_hash = draft_hash(&c);
                 self.screen = Screen::Compose(Box::new(c));
@@ -1897,40 +1954,15 @@ impl App {
                 let Screen::Compose(c) = &mut self.screen else { return Task::none() };
                 let Some(acc) = self.cfg.account(&c.account).cloned() else { return Task::none() };
                 let text = c.body.text().trim_end().to_string();
-                let formatted = crate::markup::has_markup(&text);
                 let sig = acc.signature(c.signature.as_deref()).cloned();
                 let sig_html = sig.as_ref().and_then(|s| s.html.clone());
-                let mut body = if formatted { crate::markup::to_plain(&text) } else { text.clone() };
-                // An HTML signature makes the whole message HTML.
-                let mut html = (formatted || sig_html.is_some()).then(|| crate::markup::to_html(&text));
-                let mut inline = Vec::new();
-                if let Some(sig) = &sig {
-                    body.push_str("\n\n-- \n");
-                    body.push_str(sig.body.trim_end());
-                    if let Some(h) = &mut html {
-                        match &sig_html {
-                            Some(sh) => {
-                                let (sh, parts) = crate::signature::inline_images(sh);
-                                inline = parts;
-                                h.push_str(&format!("<div class=\"mailix-signature\">\n{sh}\n</div>\n"));
-                            }
-                            None => h.push_str(&format!(
-                                "<p style=\"color:#666\">-- <br>\n{}</p>\n",
-                                crate::markup::plain_html(sig.body.trim_end())
-                            )),
-                        }
-                    }
-                }
-                if !c.quote.is_empty() {
-                    body.push_str("\n\n");
-                    body.push_str(&c.quote);
-                    if let Some(h) = &mut html {
-                        h.push_str(&format!(
-                            "<blockquote style=\"margin:0 0 0 .8em;padding-left:.8em;border-left:3px solid #ccc;color:#555\">{}</blockquote>\n",
-                            crate::markup::plain_html(&c.quote)
-                        ));
-                    }
-                }
+                let (body, html, inline) = assemble_body(
+                    &text,
+                    sig.as_ref().map(|s| s.body.as_str()),
+                    sig_html.as_deref(),
+                    &c.quote,
+                    c.forward.as_ref(),
+                );
                 let out = smtp::Outgoing {
                     to: c.to.clone(),
                     cc: c.cc.clone(),
@@ -2502,6 +2534,7 @@ fn draft_hash(c: &Compose) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
     (&c.account, &c.to, &c.cc, &c.bcc, &c.subject, &c.quote, &c.signature).hash(&mut h);
+    (c.forward.as_ref().map(|f| (f.source, f.html.len()))).hash(&mut h);
     c.body.text().trim_end().hash(&mut h);
     for a in &c.attachments {
         (&a.name, a.data.len()).hash(&mut h);
@@ -2809,6 +2842,64 @@ fn addr_edit(c: &mut Compose, field: Field, idx: usize) {
     c.addr_hover = None;
 }
 
+/// Assembles the outgoing body from the composer parts: plain fallback,
+/// optional HTML (with the signature and a forwarded mail embedded) and the
+/// inline parts for embedded images. Pure, so it is unit-tested.
+pub fn assemble_body(
+    text: &str,
+    sig_body: Option<&str>,
+    sig_html: Option<&str>,
+    quote: &str,
+    forward: Option<&ForwardPart>,
+) -> (String, Option<String>, Vec<Attachment>) {
+    let formatted = crate::markup::has_markup(text);
+    let mut body = if formatted { crate::markup::to_plain(text) } else { text.to_string() };
+    // An HTML signature or a forwarded mail make the whole message HTML.
+    let mut html = (formatted || sig_html.is_some() || forward.is_some()).then(|| crate::markup::to_html(text));
+    let mut inline: Vec<Attachment> = Vec::new();
+    if let Some(sb) = sig_body {
+        body.push_str("\n\n-- \n");
+        body.push_str(sb.trim_end());
+    }
+    if let Some(h) = &mut html {
+        if let Some(sh) = sig_html {
+            let (sh, parts) = crate::signature::inline_images(sh);
+            inline = parts;
+            h.push_str(&format!("<div class=\"mailix-signature\">\n{sh}\n</div>\n"));
+        } else if let Some(sb) = sig_body {
+            h.push_str(&format!(
+                "<p style=\"color:#666\">-- <br>\n{}</p>\n",
+                crate::markup::plain_html(sb.trim_end())
+            ));
+        }
+    }
+    if !quote.is_empty() {
+        body.push_str("\n\n");
+        body.push_str(quote);
+        if let Some(h) = &mut html {
+            h.push_str(&format!(
+                "<blockquote style=\"margin:0 0 0 .8em;padding-left:.8em;border-left:3px solid #ccc;color:#555\">{}</blockquote>\n",
+                crate::markup::plain_html(quote)
+            ));
+        }
+    }
+    if let Some(f) = forward {
+        // The forwarded mail's own HTML, with its inline images merged in
+        // (cid clashes with signature images are deduped).
+        if let Some(h) = &mut html {
+            h.push_str(&format!("<div class=\"mailix-forward\">\n{}\n</div>\n", f.html));
+            let mut have: HashSet<String> = inline.iter().filter_map(|a| a.content_id.clone()).collect();
+            for a in &f.images {
+                if a.content_id.as_deref().is_some_and(|id| !have.insert(id.to_string())) {
+                    continue;
+                }
+                inline.push(a.clone());
+            }
+        }
+    }
+    (body, html, inline)
+}
+
 fn sender(s: &Summary) -> String {
     if s.from_name.is_empty() { s.from_addr.clone() } else { crate::smtp::mailbox_text(&s.from_name, &s.from_addr) }
 }
@@ -2850,6 +2941,47 @@ pub fn short_date(ts: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forward_includes_html_and_images() {
+        // The DHL-style case: an HTML body with cid images and a plain note.
+        let parsed = crate::mime::parse(
+            b"From: a@x\r\nSubject: s\r\nContent-Type: multipart/related; boundary=\"R\"\r\n\r\n\
+--R\r\nContent-Type: text/html\r\n\r\n<p>QR:</p><img src=\"cid:qr\">\r\n\
+--R\r\nContent-Type: image/png\r\nContent-ID: <qr>\r\n\
+Content-Disposition: inline; filename=\"qr.png\"\r\n\
+Content-Transfer-Encoding: base64\r\n\r\naGVsbG8=\r\n\
+--R--\r\n",
+        );
+        let fwd = forward_payload(&parsed, 77).expect("html forward");
+        assert_eq!(fwd.source, 77);
+        assert!(fwd.html.contains("cid:qr"));
+        assert_eq!(fwd.images.len(), 1);
+        assert_eq!(fwd.images[0].content_id.as_deref(), Some("qr"));
+
+        // A user note + signature + the forward: images merged, html forced.
+        let (body, html, inline) = assemble_body(
+            "see attached",
+            Some("Me"),
+            None,
+            "\n---------- Forwarded message ----------\nFrom: a@x\n\nQR:",
+            Some(&fwd),
+        );
+        let html = html.expect("forward makes it HTML");
+        assert!(html.contains("class=\"mailix-forward\""));
+        assert!(html.contains("QR:"), "{html}");
+        assert!(inline.iter().any(|a| a.content_id.as_deref() == Some("qr") && a.data.as_ref() == b"hello"));
+        // Plain fallback still holds the readable text.
+        assert!(body.contains("Forwarded message"));
+    }
+
+    #[test]
+    fn send_without_keeps_plain() {
+        let (body, html, inline) = assemble_body("plain text", None, None, "", None);
+        assert_eq!(body, "plain text");
+        assert_eq!(html, None);
+        assert!(inline.is_empty());
+    }
 
     #[test]
     fn subject_prefixes() {

@@ -778,7 +778,7 @@ mod tests {
                 body: body.into(),
                 ..Default::default()
             };
-            crate::smtp::build_draft(&acc, &out, &id, Some("Work")).unwrap()
+            crate::smtp::build_draft(&acc, &out, &id, Some("Work"), None).unwrap()
         };
         async fn count(acc: &AccountConfig, folder: &str, id: &str) -> Vec<u32> {
             let mut s = connect(acc, "pass").await.unwrap();
