@@ -577,7 +577,7 @@ impl App {
                     .align_y(Alignment::Center),
                 )
                 .width(Fill)
-                .padding(iced::Padding { top: 10.0, bottom: 6.0, left: 14.0, right: 16.0 })
+                .padding(iced::Padding { top: 10.0, bottom: 6.0, left: 14.0, right: 22.0 })
                 .style(theme::tool)
                 .on_press(Msg::ToggleCollapsed(acc_id.clone())),
             );
@@ -754,10 +754,25 @@ impl App {
             .into(),
         };
         let count: El<'_> = if unread > 0 { count_badge(unread) } else { Space::new().into() };
+        // Collapse chevron for parents: on the left (like the account header),
+        // nested so it toggles without selecting — and clear of the scrollbar
+        // that overlaps the row edges on the right.
+        let head: El<'_> = match toggle {
+            None => Space::new().width(4).into(),
+            Some((collapsed, key)) => button(
+                icon(if collapsed { ic::CHEVRON_RIGHT } else { ic::CHEVRON_DOWN }, 13)
+                    .style(|t: &iced::Theme| text::Style { color: Some(theme::muted(t)) }),
+            )
+            .padding([2, 4])
+            .style(theme::tool)
+            .on_press(Msg::ToggleCollapsed(key))
+            .into(),
+        };
         let main = button(
             row![
                 accent_bar(selected, 34.0),
                 Space::new().width(13.0 + depth as f32 * 14.0),
+                head,
                 icon(glyph, 15).style(move |t: &iced::Theme| text::Style {
                     color: Some(if selected { t.palette().primary } else { theme::muted(t) })
                 }),
@@ -770,7 +785,7 @@ impl App {
                 star_btn,
                 Space::new().width(4),
                 count,
-                Space::new().width(if toggle.is_some() { 4 } else { 16 }),
+                Space::new().width(16),
             ]
             .align_y(Alignment::Center),
         )
@@ -778,18 +793,7 @@ impl App {
         .padding(0)
         .style(theme::row(selected))
         .on_press_maybe(msg);
-        match toggle {
-            None => main.into(),
-            Some((collapsed, key)) => row![
-                main,
-                button(icon(if collapsed { ic::CHEVRON_RIGHT } else { ic::CHEVRON_DOWN }, 12))
-                    .padding([0, 8])
-                    .height(34)
-                    .style(theme::tool)
-                    .on_press(Msg::ToggleCollapsed(key)),
-            ]
-            .into(),
-        }
+        main.into()
     }
 
     // ---- message list ------------------------------------------------------
