@@ -47,6 +47,7 @@ jobs:
         run: cargo build --release --locked
 
       - name: Package tarball
+        shell: bash
         run: |
           set -euo pipefail
           VER="${GITHUB_REF_NAME#v}"
@@ -56,6 +57,7 @@ jobs:
           tar -czf "mailix-$VER-x86_64-linux.tar.gz" -C dist "mailix-$VER"
 
       - name: Package .deb
+        shell: bash
         run: |
           set -euo pipefail
           VER="${GITHUB_REF_NAME#v}"
@@ -70,6 +72,7 @@ jobs:
           dpkg-deb --build --root-owner-group deb "mailix_${VER}_amd64.deb"
 
       - name: Package AppImage
+        shell: bash
         run: |
           set -euo pipefail
           VER="${GITHUB_REF_NAME#v}"
@@ -123,11 +126,18 @@ jobs:
         env:
           MACOSX_DEPLOYMENT_TARGET: "11.0"
 
+      - name: Rename binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p bins
+          cp "target/${{ matrix.target }}/release/mailix" "bins/mailix-${{ matrix.target }}"
+
       - name: Upload raw binary
         uses: actions/upload-artifact@v4
         with:
           name: macos-bin-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/mailix
+          path: bins/mailix-${{ matrix.target }}
           if-no-files-found: error
 
   macos-bundle:
