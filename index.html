@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Mailix pacman repository</title>
+<style>body{font:16px/1.5 system-ui,sans-serif;max-width:38rem;margin:4rem auto;padding:0 1rem;color:#1b1b1f}
+code,pre{background:#f2f2f5;border-radius:4px;padding:.1em .35em}
+pre{padding:.9rem;overflow-x:auto}</style>
+<h1>Mailix pacman repository</h1>
+<p>Packages for <a href="https://github.com/stikkx/mailix">Mailix</a>, built by its release
+workflow from the official release tarball.</p>
+<pre>[mailix]
+SigLevel = Optional TrustAll
+Server = https://stikkx.github.io/mailix/x86_64</pre>
+<p>Add that to <code>/etc/pacman.conf</code> (or include it from
+<code>/etc/pacman.d/mailix.conf</code>), then <code>sudo pacman -Sy mailix</code>.
+Later updates arrive with <code>sudo pacman -Syu</code>, so
+<code>omarchy-update</code> keeps Mailix current.</p>
+<p><a href="x86_64/">x86_64/</a></p>
