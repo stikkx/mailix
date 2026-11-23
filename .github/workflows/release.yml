@@ -314,17 +314,7 @@ jobs:
             -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
             commit --quiet -m "pacman: mailix ${GITHUB_REF_NAME#v}"
           git -C "$work" push --quiet origin pacman
-          echo "Published $(cd "$work" && ls x86_64/*.pkg.tar.zst | xargs -n1 basename)"
-
-      - name: Rebuild the Pages site
-        continue-on-error: true
-        env:
-          TOKEN: ${{ github.token }}
-        run: |
-          curl -fsS -X POST \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/pages/builds" >/dev/null
+          echo "Published: $(cd "$work" && ls x86_64/*.pkg.tar.zst)"
 
   release:
     name: Publish GitHub release
