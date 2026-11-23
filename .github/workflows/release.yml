@@ -301,6 +301,14 @@ jobs:
           cp mailix-*.pkg.tar.zst "$work/x86_64/"
           # every package is passed in, so -R only prunes the previous build
           ( cd "$work" && repo-add --quiet -R x86_64/mailix.db.tar.gz x86_64/*.pkg.tar.zst )
+          # GitHub Pages serves symlinks as their target path, so mailix.db and
+          # mailix.files must be real copies for pacman to read the database.
+          for f in mailix.db mailix.files; do
+            if [ -L "$work/x86_64/$f" ]; then
+              cp --remove-destination "$work/x86_64/$f.tar.gz" "$work/x86_64/$f"
+            fi
+          done
+          ls -l "$work/x86_64/"
           git -C "$work" add -A
           git -C "$work" -c user.name="github-actions[bot]" \
             -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
