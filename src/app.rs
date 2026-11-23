@@ -257,6 +257,8 @@ pub struct App {
     pub loading: bool,
     /// Decoded-on-demand images of the open message, keyed by `src`.
     pub images: HashMap<String, image::Handle>,
+    /// Same keys, still holding the original bytes — for copying to the clipboard.
+    pub image_bytes: HashMap<String, Vec<u8>>,
     /// Remote images: None = blocked, Some(false) = loading, Some(true) = loaded.
     pub remote_images: Option<bool>,
     /// Reader body (rebuilt when the message, view mode or images change).
@@ -303,6 +305,9 @@ pub enum Msg {
     Loaded(i64, Result<Parsed, String>),
     ToggleHtml,
     LoadRemoteImages,
+    /// Right-click on an inline image: copy it to the clipboard.
+    CopyImage(String),
+    ImageCopied(Result<(), String>),
     RemoteImages(i64, Vec<(String, Vec<u8>)>),
     ToggleCollapsed(String),
     CycleSidebar,
@@ -333,6 +338,9 @@ pub enum Msg {
     Summarized(Result<String, String>),
     ToggleSeen,
     ToggleFlag,
+    /// Toggles a tag (Todo/Important keyword) on the open mail; the bit is
+    /// carried as payload.
+    ToggleTag(u8),
     Delete,
     Archive,
     Remote(Result<(), String>),
@@ -397,7 +405,9 @@ pub enum Msg {
     AiWrite,
     AiWritten(Result<String, String>),
     Send,
-    Sent(Result<(), String>),
+    /// Reply sent: close the composer; the captured reply target is marked
+    /// answered (local + server).
+    Sent(Result<(), String>, Option<(String, String, u32, i64)>),
     CloseScreen,
     // contacts
     ShowContacts,
@@ -543,6 +553,7 @@ impl App {
             show_html: true,
             loading: false,
             images: HashMap::new(),
+            image_bytes: HashMap::new(),
             remote_images: None,
             reader: Vec::new(),
             reader_blocks: Vec::new(),
@@ -804,9 +815,23 @@ impl App {
         )
     }
 
+    /// The original bytes of a reader image, for the clipboard: downloaded
+    /// remote images and cid-embedded parts (even if not yet decoded).
+    fn image_data(&self, src: &str) -> Option<Vec<u8>> {
+        if let Some(b) = self.image_bytes.get(src) {
+            return Some(b.clone());
+        }
+        let cid = src.strip_prefix("cid:")?;
+        self.parsed
+            .as_ref()?
+            .attachments
+            .iter()
+            .find(|a| a.content_id.as_deref() == Some(cid))
+            .map(|a| (*a.data).clone())
+    }
+
     /// Turns the open message into selectable text blocks and images.
-    fn rebuild_reader(&mut self) {
-        let blocks = match (&self.parsed, &self.open) {
+    fn rebuild_reader(&mut self) {        let blocks = match (&self.parsed, &self.open) {
             (Some(p), _) if self.show_html && !p.rich.is_empty() => mime::blocks(&p.rich, |src| self.images.contains_key(src)),
             (_, Some(m)) => vec![mime::Block::Text {
                 text: m.body_text.trim_end().to_string(),
@@ -1092,6 +1117,7 @@ impl App {
                         Ok(p) => {
                             self.show_html = p.html.is_some();
                             for (src, bytes) in p.local_images() {
+                                self.image_bytes.insert(src.clone(), bytes.clone());
                                 self.images.insert(src, image::Handle::from_bytes(bytes));
                             }
                             self.parsed = Some(p);
@@ -1111,10 +1137,27 @@ impl App {
                 self.remote_images = Some(false);
                 return Task::perform(fetch_images(urls), move |imgs| Msg::RemoteImages(id, imgs));
             }
+            Msg::CopyImage(src) => {
+                let Some(bytes) = self.image_data(&src) else {
+                    self.status = Some(Err("The image is not loaded yet.".into()));
+                    return Task::none();
+                };
+                return Task::perform(
+                    async move { crate::clipboard::copy_image(&bytes).await },
+                    |r| Msg::ImageCopied(r.map_err(err)),
+                );
+            }
+            Msg::ImageCopied(r) => {
+                self.status = Some(match r {
+                    Ok(()) => Ok("Image copied to the clipboard.".into()),
+                    Err(e) => Err(format!("Copying the image failed: {e}")),
+                });
+            }
             Msg::RemoteImages(id, imgs) => {
                 if self.selected == Some(id) {
                     self.remote_images = Some(true);
                     for (src, bytes) in imgs {
+                        self.image_bytes.insert(src.clone(), bytes.clone());
                         self.images.insert(src, image::Handle::from_bytes(bytes));
                     }
                     self.rebuild_reader();
@@ -1317,6 +1360,7 @@ impl App {
                 self.summary = None;
                 self.parsed = None;
                 self.images.clear();
+                self.image_bytes.clear();
                 self.remote_images = None;
                 self.open = self.store.message(id).ok().flatten();
                 self.rebuild_reader();
@@ -1407,6 +1451,20 @@ impl App {
                     Ok(s) => self.summary = Some(s),
                     Err(e) => self.status = Some(Err(e)),
                 }
+            }
+            Msg::ToggleTag(bit) => {
+                let Some((acc, s)) = self.current() else { return Task::none() };
+                let keyword = if bit == crate::store::TAG_TODO {
+                    crate::store::KEYWORD_TODO
+                } else {
+                    crate::store::KEYWORD_IMPORTANT
+                };
+                let on = s.tags & bit == 0;
+                let _ = self.store.set_tag(s.id, bit, on);
+                self.refresh();
+                return self.remote(acc, move |a, pw| async move {
+                    imap::set_flag(&a, &pw, &s.folder, s.uid, keyword, on).await
+                });
             }
             Msg::ToggleSeen | Msg::ToggleFlag => {
                 let Some((acc, s)) = self.current() else { return Task::none() };
@@ -1986,6 +2044,14 @@ impl App {
                 let draft = c.draft_folder.clone().map(|f| (f, c.draft_id.clone(), c.draft_uid));
                 let sent_folder =
                     if acc.save_sent_copy { self.store.folder_by_role(&acc.id, FolderRole::Sent).ok().flatten() } else { None };
+                // A reply marks its original answered — locally and on the server.
+                let reply_target = c.in_reply_to.as_ref().and_then(|mid| {
+                    self.store
+                        .summary_by_message_id(&acc.id, mid)
+                        .ok()
+                        .flatten()
+                        .map(|s| (s.account.clone(), s.folder.clone(), s.uid, s.id))
+                });
                 return Task::perform(
                     async move {
                         let pw = secret(secrets::smtp_key(&acc.id)).await?;
@@ -2004,13 +2070,22 @@ impl App {
                         }
                         Ok::<_, anyhow::Error>(())
                     },
-                    |r| Msg::Sent(r.map_err(err)),
+                    |r| Msg::Sent(r.map_err(err), reply_target),
                 );
             }
-            Msg::Sent(r) => match r {
+            Msg::Sent(r, replied) => match r {
                 Ok(()) => {
                     self.screen = Screen::Mail;
                     self.status = Some(Ok("Message sent.".into()));
+                    if let Some((account, folder, uid, id)) = replied {
+                        let _ = self.store.set_answered(id, true);
+                        self.refresh();
+                        if let Some(acc) = self.cfg.account(&account).cloned() {
+                            return self.remote(acc, move |a, pw| async move {
+                                imap::set_flag(&a, &pw, &folder, uid, "\\Answered", true).await
+                            });
+                        }
+                    }
                 }
                 Err(e) => {
                     if let Screen::Compose(c) = &mut self.screen {
@@ -2135,6 +2210,8 @@ impl App {
             (Screen::Mail, Key::Character("e")) => self.update(Msg::Archive),
             (Screen::Mail, Key::Character("s")) => self.update(Msg::ToggleFlag),
             (Screen::Mail, Key::Character("u")) => self.update(Msg::ToggleSeen),
+            (Screen::Mail, Key::Character("1")) => self.update(Msg::ToggleTag(crate::store::TAG_TODO)),
+            (Screen::Mail, Key::Character("2")) => self.update(Msg::ToggleTag(crate::store::TAG_IMPORTANT)),
             _ => Task::none(),
         }
     }

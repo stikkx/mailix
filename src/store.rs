@@ -88,10 +88,14 @@ pub struct Summary {
     pub date: i64,
     pub seen: bool,
     pub flagged: bool,
+    /// The mail has a reply sent for it (IMAP \Answered).
+    pub answered: bool,
     pub has_attachments: bool,
     pub preview: String,
     pub message_id: String,
     pub refs: String,
+    /// Tag bits (see TAG_* constants).
+    pub tags: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -122,6 +126,8 @@ pub struct NewMessage {
     pub seen: bool,
     pub flagged: bool,
     pub answered: bool,
+    /// Tag bits: server keywords from flags plus locally derived bits.
+    pub tags: u8,
     pub attachments: Vec<String>,
     pub preview: String,
     pub body_text: String,
@@ -169,6 +175,7 @@ CREATE TABLE IF NOT EXISTS messages (
     seen        INTEGER NOT NULL DEFAULT 0,
     flagged     INTEGER NOT NULL DEFAULT 0,
     answered    INTEGER NOT NULL DEFAULT 0,
+    tags        INTEGER NOT NULL DEFAULT 0,
     attachments TEXT NOT NULL DEFAULT '',
     preview     TEXT NOT NULL DEFAULT '',
     body_text   TEXT NOT NULL DEFAULT '',
@@ -195,8 +202,31 @@ CREATE INDEX IF NOT EXISTS contacts_email ON contacts (email);
 CREATE INDEX IF NOT EXISTS contacts_name ON contacts (name);
 "#;
 
+/// Creates the schema and migrates older databases (adds missing columns).
+fn init_db(conn: &Connection) -> Result<()> {
+    conn.execute_batch(SCHEMA)?;
+    let has_tags = conn
+        .prepare("PRAGMA table_info(messages)")?
+        .query_map([], |r| r.get::<_, String>(1))?
+        .any(|c| c.as_deref() == Ok("tags"));
+    if !has_tags {
+        conn.execute_batch("ALTER TABLE messages ADD COLUMN tags INTEGER NOT NULL DEFAULT 0")?;
+    }
+    Ok(())
+}
+
+/// Tag bits, stored IMAP server-side where possible so Thunderbird and Mailix
+/// agree: "Todo" and "Important" map to Thunderbird's standard keywords.
+pub const TAG_TODO: u8 = 1;
+pub const TAG_IMPORTANT: u8 = 2;
+/// Local only: derived from the AgentProcessed header of the raw mail.
+pub const TAG_AGENT: u8 = 4;
+/// Thunderbird's standard keywords behind the two toggles.
+pub const KEYWORD_TODO: &str = "$label4";
+pub const KEYWORD_IMPORTANT: &str = "$label1";
+
 const SUMMARY_COLS: &str =
-    "id, account, folder, uid, subject, from_name, from_addr, date, seen, flagged, attachments != '', preview, message_id, refs";
+    "id, account, folder, uid, subject, from_name, from_addr, date, seen, flagged, attachments != '', preview, message_id, refs, tags, answered";
 
 fn summary_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Summary> {
     Ok(Summary {
@@ -214,20 +244,22 @@ fn summary_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Summary> {
         preview: r.get(11)?,
         message_id: r.get(12)?,
         refs: r.get(13)?,
+        tags: r.get(14)?,
+        answered: r.get(15)?,
     })
 }
 
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
-        conn.execute_batch(SCHEMA)?;
+        init_db(&conn)?;
         Ok(Store { conn: Arc::new(Mutex::new(conn)) })
     }
 
     #[cfg(test)]
     pub fn in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
-        conn.execute_batch(SCHEMA)?;
+        init_db(&conn)?;
         Ok(Store { conn: Arc::new(Mutex::new(conn)) })
     }
 
@@ -336,8 +368,8 @@ impl Store {
             let mut st = tx.prepare(
                 "INSERT OR IGNORE INTO messages
                  (account, folder, uid, message_id, refs, subject, from_name, from_addr, to_addrs, cc_addrs,
-                  reply_to, date, seen, flagged, answered, attachments, preview, body_text)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+                  reply_to, date, seen, flagged, answered, attachments, preview, body_text, tags)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
             )?;
             let mut raw = tx.prepare("INSERT OR REPLACE INTO raw_messages (id, data) VALUES (?1, ?2)")?;
             for mut m in msgs {
@@ -360,6 +392,7 @@ impl Store {
                     m.attachments.join("\n"),
                     m.preview,
                     m.body_text,
+                    m.tags,
                 ])?;
                 if n == 1 {
                     let id = tx.last_insert_rowid();
@@ -376,8 +409,14 @@ impl Store {
     }
 
     /// Applies server flags for known UIDs and deletes the ones that vanished.
-    /// Returns ids of deleted rows.
-    pub fn reconcile_flags(&self, account: &str, folder: &str, server: &[(u32, bool, bool)]) -> Result<Vec<i64>> {
+    /// Returns ids of deleted rows. Tags: keyword bits come from the server;
+    /// local bits (AgentProcessed) survive.
+    pub fn reconcile_flags(
+        &self,
+        account: &str,
+        folder: &str,
+        server: &[(u32, bool, bool, u8, bool)],
+    ) -> Result<Vec<i64>> {
         let mut db = self.db();
         let tx = db.transaction()?;
         let local: Vec<(i64, u32)> = {
@@ -385,16 +424,18 @@ impl Store {
             st.query_map(params![account, folder], |r| Ok((r.get(0)?, r.get(1)?)))?
                 .collect::<rusqlite::Result<_>>()?
         };
-        let server_map: std::collections::HashMap<u32, (bool, bool)> =
-            server.iter().map(|&(u, s, f)| (u, (s, f))).collect();
+        let server_map: std::collections::HashMap<u32, (bool, bool, u8, bool)> =
+            server.iter().map(|&(u, s, f, t, a)| (u, (s, f, t, a))).collect();
         let mut removed = Vec::new();
         {
-            let mut upd = tx.prepare("UPDATE messages SET seen = ?2, flagged = ?3 WHERE id = ?1")?;
+            let mut upd = tx.prepare(
+                "UPDATE messages SET seen = ?2, flagged = ?3, tags = (tags & ~3) | ?4, answered = ?5 WHERE id = ?1",
+            )?;
             let mut del = tx.prepare("DELETE FROM messages WHERE id = ?1")?;
             for (id, uid) in local {
                 match server_map.get(&uid) {
-                    Some(&(seen, flagged)) => {
-                        upd.execute(params![id, seen, flagged])?;
+                    Some(&(seen, flagged, tags, answered)) => {
+                        upd.execute(params![id, seen, flagged, tags, answered])?;
                     }
                     None => {
                         del.execute([id])?;
@@ -453,15 +494,16 @@ impl Store {
                 ),
                 [id],
                 |r| {
-                    let att: String = r.get(18)?;
+                    // SUMMARY_COLS ends at `answered` (index 15); extras follow.
+                    let att: String = r.get(20)?;
                     Ok(Message {
                         summary: summary_row(r)?,
                         message_id: r.get(12)?,
                         references: r.get(13)?,
-                        to: r.get(14)?,
-                        cc: r.get(15)?,
-                        reply_to: r.get(16)?,
-                        body_text: r.get(17)?,
+                        to: r.get(16)?,
+                        cc: r.get(17)?,
+                        reply_to: r.get(18)?,
+                        body_text: r.get(19)?,
                         attachments: att.lines().filter(|l| !l.is_empty()).map(String::from).collect(),
                     })
                 },
@@ -486,6 +528,49 @@ impl Store {
     pub fn set_flagged(&self, id: i64, flagged: bool) -> Result<()> {
         self.db().execute("UPDATE messages SET flagged = ?2 WHERE id = ?1", params![id, flagged])?;
         Ok(())
+    }
+
+    pub fn set_answered(&self, id: i64, answered: bool) -> Result<()> {
+        self.db().execute("UPDATE messages SET answered = ?2 WHERE id = ?1", params![id, answered])?;
+        Ok(())
+    }
+
+    /// The summary of the mail with this Message-ID, for marking a reply's
+    /// source as answered.
+    pub fn summary_by_message_id(&self, account: &str, mid: &str) -> Result<Option<Summary>> {
+        let db = self.db();
+        let sql = format!("SELECT {SUMMARY_COLS} FROM messages WHERE account = ?1 AND message_id = ?2");
+        Ok(db.query_row(&sql, params![account, mid], summary_row).optional()?)
+    }
+
+    /// Sets or clears one tag bit. The AgentProcessed bit is local only and is
+    /// never toggled from here.
+    pub fn set_tag(&self, id: i64, bit: u8, on: bool) -> Result<()> {
+        self.db().execute(
+            "UPDATE messages SET tags = CASE WHEN ?2 THEN tags | ?3 ELSE tags & ~?3 END WHERE id = ?1",
+            params![id, on, bit as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Marks cached mail whose raw headers carry an AgentProcessed field
+    /// (name without hyphens: X-Agent-Processed, X-AgentProcessed, …). Runs
+    /// per sync; existing rows with the tag set are skipped. Returns how many
+    /// rows were newly tagged.
+    pub fn backfill_agent_tags(&self) -> Result<usize> {
+        // Header block = raw source up to the first blank line; scan it for
+        // the AgentProcessed field (any hyphenation) case-insensitively.
+        const HEAD: &str =
+            "lower(CAST(substr(r.data, 1, coalesce(instr(r.data, X'0D0A0D0A'), 30000)) AS TEXT))";
+        let sql = format!(
+            "UPDATE messages SET tags = tags | ?1 \
+             WHERE (tags & ?1) = 0 AND EXISTS (\
+               SELECT 1 FROM raw_messages r WHERE r.id = messages.id AND (\
+                 instr({HEAD}, 'agentprocessed') > 0 OR \
+                 instr({HEAD}, 'agent-processed') > 0))"
+        );
+        let n = self.db().execute(&sql, params![TAG_AGENT])?;
+        Ok(n)
     }
 
     pub fn delete_message(&self, id: i64) -> Result<()> {
@@ -587,6 +672,7 @@ mod tests {
             seen: false,
             flagged: false,
             answered: false,
+            tags: 0,
             attachments: vec![],
             preview: String::new(),
             body_text: "hello".into(),
@@ -608,13 +694,91 @@ mod tests {
         assert_eq!(list[0].subject, "two");
         assert_eq!(s.folders("a").unwrap()[0].unread, 2);
 
-        let removed = s.reconcile_flags("a", "INBOX", &[(2, true, true)]).unwrap();
+        let removed = s.reconcile_flags("a", "INBOX", &[(2, true, true, TAG_TODO, true)]).unwrap();
         assert_eq!(removed.len(), 1);
         assert!(s.raw(removed[0]).unwrap().is_none(), "raw source deleted with message");
         let list = s.list("a", "INBOX", 10, 0).unwrap();
         assert_eq!(list.len(), 1);
         assert!(list[0].seen && list[0].flagged);
+        assert!(list[0].answered);
+        assert_eq!(list[0].tags, TAG_TODO);
         assert_eq!(s.list_role(FolderRole::Inbox, 10, 0).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn tags_and_agent_backfill() {
+        let s = Store::in_memory().unwrap();
+        s.upsert_folder("a", "INBOX", FolderRole::Inbox).unwrap();
+        let mut m1 = msg(1, "one");
+        m1.raw = b"From: a@x\r\nX-Agent-Processed: yes\r\n\r\nbody".to_vec();
+        // Hyphenation variant in the header name, agent word only in the body:
+        let mut m2 = msg(2, "two");
+        m2.raw = b"From: a@x\r\nX-AgentProcessed: \r\n\r\nthe agent processed it".to_vec();
+        // No agent header at all; a body that only looks like agent prose.
+        let mut m3 = msg(3, "three");
+        m3.raw = b"From: a@x\r\nSubject: s\r\n\r\nplease agent processed this".to_vec();
+        s.insert_messages("a", "INBOX", vec![m1, m2, m3]).unwrap();
+        // parse_raw normally derives the bit; here the SQL backfill is the mechanism.
+        let n = s.backfill_agent_tags().unwrap();
+        let list = s.list("a", "INBOX", 10, 0).unwrap();
+        let tags_of = |subject: &str| list.iter().find(|l| l.subject == subject).map(|l| l.tags).unwrap();
+        assert_eq!(tags_of("one") & TAG_AGENT, TAG_AGENT, "X-Agent-Processed detected");
+        assert_eq!(tags_of("two") & TAG_AGENT, TAG_AGENT, "header variant without hyphen");
+        assert_eq!(tags_of("three") & TAG_AGENT, 0, "body text must not trigger the tag");
+        assert_eq!(n, 2);
+        // Keyword toggles don't touch the local bit; toggling off clears it.
+        let id = list.iter().find(|l| l.subject == "one").unwrap().id;
+        s.set_tag(id, TAG_AGENT, true).unwrap();
+        s.set_tag(id, TAG_TODO, true).unwrap();
+        s.set_tag(id, TAG_IMPORTANT, true).unwrap();
+        s.set_tag(id, TAG_IMPORTANT, false).unwrap();
+        let tags = s.list("a", "INBOX", 10, 0).unwrap();
+        let tags = tags.iter().find(|l| l.subject == "one").unwrap().tags;
+        assert_eq!(tags, TAG_AGENT | TAG_TODO);
+    }
+
+    #[test]
+    fn message_reads_tags() {
+        let s = Store::in_memory().unwrap();
+        s.upsert_folder("a", "INBOX", FolderRole::Inbox).unwrap();
+        let added = s.insert_messages("a", "INBOX", vec![msg(1, "one")]).unwrap();
+        let m = s.message(added[0].0).unwrap().unwrap();
+        assert_eq!(m.summary.subject, "one");
+        assert_eq!(m.summary.tags, 0);
+        assert_eq!(m.to, "me@example.com");
+        s.set_tag(added[0].0, TAG_IMPORTANT, true).unwrap();
+        assert_eq!(s.message(added[0].0).unwrap().unwrap().summary.tags, TAG_IMPORTANT);
+    }
+
+    #[test]
+    fn finds_reply_target_by_message_id() {
+        let s = Store::in_memory().unwrap();
+        s.upsert_folder("a", "INBOX", FolderRole::Inbox).unwrap();
+        let added = s.insert_messages("a", "INBOX", vec![msg(1, "one")]).unwrap();
+        let id = added[0].0;
+        let mid = added[0].1.message_id.clone();
+        let t = s.summary_by_message_id("a", &mid).unwrap().unwrap();
+        assert_eq!((t.id, t.account.as_str(), t.folder.as_str()), (id, "a", "INBOX"));
+        s.set_answered(id, true).unwrap();
+        assert!(s.summary_by_message_id("a", &mid).unwrap().unwrap().answered);
+        assert!(s.summary_by_message_id("a", "<other@x>").unwrap().is_none());
+    }
+
+    #[test]
+    fn migrates_missing_tags_column() {
+        use std::path::PathBuf;
+        let dir: PathBuf = std::env::temp_dir().join(format!("mailix-mig-{}-0", std::process::id()));
+        let _ = std::fs::remove_file(&dir);
+        // Old database: full messages table without the tags column.
+        let conn = rusqlite::Connection::open(&dir).unwrap();
+        conn.execute_batch(&SCHEMA.replace("    tags        INTEGER NOT NULL DEFAULT 0,\n", "")).unwrap();
+        drop(conn);
+        let s = Store::open(&dir).unwrap();
+        s.upsert_folder("a", "INBOX", FolderRole::Inbox).unwrap();
+        let added = s.insert_messages("a", "INBOX", vec![msg(1, "one")]).unwrap();
+        s.set_tag(added[0].0, TAG_TODO, true).unwrap();
+        assert_eq!(s.list("a", "INBOX", 10, 0).unwrap()[0].tags, TAG_TODO);
+        let _ = std::fs::remove_file(&dir);
     }
 
     #[test]

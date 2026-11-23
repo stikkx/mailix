@@ -4,6 +4,7 @@
 
 mod ai;
 mod app;
+mod clipboard;
 mod config;
 mod contacts;
 mod grammar;

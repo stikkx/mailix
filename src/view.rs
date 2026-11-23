@@ -909,8 +909,24 @@ impl App {
         if s.has_attachments {
             flags = flags.push(icon(ic::ATTACHMENT, 13).style(|t: &iced::Theme| text::Style { color: Some(theme::muted(t)) }));
         }
+        if s.answered {
+            flags = flags.push(tooltip(
+                icon(ic::REPLY, 13).style(|t: &iced::Theme| text::Style { color: Some(t.palette().primary) }),
+                container(text("Answered").size(12)).padding([4, 8]).style(theme::boxed),
+                tooltip::Position::Right,
+            ));
+        }
         if s.flagged {
             flags = flags.push(icon(ic::FLAG, 13).style(|t: &iced::Theme| text::Style { color: Some(t.palette().warning) }));
+        }
+        if s.tags & crate::store::TAG_TODO != 0 {
+            flags = flags.push(tagchip(theme::CHIP_TODO));
+        }
+        if s.tags & crate::store::TAG_IMPORTANT != 0 {
+            flags = flags.push(tagchip(theme::CHIP_IMPORTANT));
+        }
+        if s.tags & crate::store::TAG_AGENT != 0 {
+            flags = flags.push(tagchip(theme::CHIP_AGENT));
         }
         // Single-line texts are clipped in their own box so they never run
         // under the date or the attachment/flag icons.
@@ -1139,6 +1155,21 @@ impl App {
                 );
             }
         }
+        // The mail's raw source carries an AgentProcessed field: yellow badge.
+        if let Some(tags) = self.open.as_ref().map(|m| m.summary.tags) {
+            if tags & crate::store::TAG_AGENT != 0 {
+                body = body.push(
+                    container(
+                        row![tagchip(theme::CHIP_AGENT), text("AgentProcessed").size(13)]
+                            .spacing(8)
+                            .align_y(Alignment::Center),
+                    )
+                    .padding([6, 12])
+                    .width(Fill)
+                    .style(theme::note),
+                );
+            }
+        }
         if let Some(sum) = &self.summary {
             body = body.push(container(text(sum).size(13)).padding(14).width(Fill).style(theme::note));
         }
@@ -1161,6 +1192,9 @@ impl App {
                     None => El::from(Space::new()),
                     Some(h) => {
                         let img = iced::widget::image(h.clone()).content_fit(iced::ContentFit::ScaleDown);
+                        // Right-click copies the image (the click stays with the
+                        // link button below).
+                        let img = iced::widget::mouse_area(img).on_right_press(Msg::CopyImage(src.clone()));
                         match link {
                             Some(url) => button(img).padding(0).style(theme::link).on_press(Msg::Link(url.clone())).into(),
                             None => img.into(),
@@ -1170,6 +1204,11 @@ impl App {
             });
         }
         body = body.push(content);
+        let has_images =
+            self.reader.iter().any(|b| matches!(b, ReaderBlock::Image { src, .. } if self.images.contains_key(src)));
+        if has_images {
+            body = body.push(muted("Right-click an image to copy it.").size(11));
+        }
         if self.reader.iter().any(|b| matches!(b, ReaderBlock::Text { settings, .. } if settings.has_links())) {
             body = body.push(muted("Ctrl+click a link to open it").size(11));
         }
@@ -2054,6 +2093,16 @@ fn accent_bar<'a>(on: bool, height: f32) -> El<'a> {
     container(Space::new().width(3).height(height))
         .style(move |t: &iced::Theme| container::Style {
             background: on.then(|| t.palette().primary.into()),
+            ..Default::default()
+        })
+        .into()
+}
+
+/// Tiny square marker for a tag (Todo / Important) or the AgentProcessed badge.
+fn tagchip(c: iced::Color) -> El<'static> {
+    container(Space::new().width(8).height(8))
+        .style(move |_| container::Style {
+            background: Some(c.into()),
             ..Default::default()
         })
         .into()

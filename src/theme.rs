@@ -5,6 +5,12 @@ use iced::theme::{Mode, Palette};
 use iced::widget::{button, checkbox, container, pick_list, scrollable, text_editor, text_input};
 use iced::{Background, Border, Color, Theme, color};
 
+/// Fixed marker colours for tags and the AgentProcessed badge — readable on
+/// both palettes (they are tiny solids, never text).
+pub const CHIP_TODO: Color = Color::from_rgb8(0x33, 0x72, 0xC8);
+pub const CHIP_IMPORTANT: Color = Color::from_rgb8(0xC4, 0x3E, 0x3E);
+pub const CHIP_AGENT: Color = Color::from_rgb8(0xE7, 0xBE, 0x2D);
+
 pub const ACCENTS: [(&str, &str); 8] = [
     ("Blue", "#2f6bed"),
     ("Indigo", "#5b5bd6"),

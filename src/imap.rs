@@ -200,6 +200,10 @@ pub async fn sync_account(acc: &AccountConfig, password: &str, store: &Store, se
             Err(e) => tracing::warn!("sync {}/{name}: {e:#}", acc.name),
         }
     }
+    // Tag cached mail that carries the AgentProcessed header (from any era).
+    if let Err(e) = store.backfill_agent_tags() {
+        tracing::warn!("sync {}: agent tag backfill: {e:#}", acc.name);
+    }
     search.commit()?;
     session.logout().await.ok();
     Ok(report)
@@ -295,8 +299,8 @@ async fn sync_folder(
             let fetches: Vec<Fetch> = stream.try_collect().await?;
             for f in &fetches {
                 if let Some(uid) = f.uid {
-                    let (seen, flagged) = flag_bits(f);
-                    flags.push((uid, seen, flagged));
+                    let (seen, flagged, tags, answered) = flag_bits(f);
+                    flags.push((uid, seen, flagged, tags, answered));
                 }
             }
         }
@@ -358,24 +362,28 @@ async fn sync_folder(
     Ok(report)
 }
 
-fn flag_bits(f: &Fetch) -> (bool, bool) {
+fn flag_bits(f: &Fetch) -> (bool, bool, u8, bool) {
     let mut seen = false;
     let mut flagged = false;
+    let mut answered = false;
+    let mut tags = 0u8;
     for fl in f.flags() {
         match fl {
             Flag::Seen => seen = true,
             Flag::Flagged => flagged = true,
+            Flag::Answered => answered = true,
+            Flag::Custom(k) if k.as_ref() == crate::store::KEYWORD_TODO => tags |= crate::store::TAG_TODO,
+            Flag::Custom(k) if k.as_ref() == crate::store::KEYWORD_IMPORTANT => tags |= crate::store::TAG_IMPORTANT,
             _ => {}
         }
     }
-    (seen, flagged)
+    (seen, flagged, tags, answered)
 }
 
 fn parse_fetch(f: &Fetch) -> Option<NewMessage> {
     let uid = f.uid?;
     let raw = f.body()?;
-    let (seen, flagged) = flag_bits(f);
-    let answered = f.flags().any(|fl| matches!(fl, Flag::Answered));
+    let (seen, flagged, tag_bits, answered) = flag_bits(f);
     let fallback_date = f.internal_date().map(|d| d.timestamp()).unwrap_or(0);
     let mut m = parse_raw(raw)?;
     m.raw = raw.to_vec();
@@ -383,6 +391,7 @@ fn parse_fetch(f: &Fetch) -> Option<NewMessage> {
     m.seen = seen;
     m.flagged = flagged;
     m.answered = answered;
+    m.tags |= tag_bits;
     if m.date == 0 {
         m.date = fallback_date;
     }
@@ -460,6 +469,18 @@ pub fn parse_raw(raw: &[u8]) -> Option<NewMessage> {
         seen: false,
         flagged: false,
         answered: false,
+        tags: if msg
+            .headers()
+            .into_iter()
+            .any(|h| {
+                let n = h.name().as_str().replace('-', "").to_ascii_lowercase();
+                n == "agentprocessed" || n == "xagentprocessed"
+            })
+        {
+            crate::store::TAG_AGENT
+        } else {
+            0
+        },
         attachments,
         preview,
         body_text,
@@ -643,6 +664,16 @@ mod tests {
         assert_eq!(m.message_id, "<abc@x>");
         assert!(m.body_text.contains("Hello"));
         assert!(m.preview.contains("Bob"));
+    }
+
+    #[test]
+    fn agent_header_sets_tag() {
+        let with = parse_raw(b"From: a@x\r\nX-Agent-Processed: 2026-11-16\r\nSubject: s\r\n\r\nbody").unwrap();
+        assert_eq!(with.tags, crate::store::TAG_AGENT);
+        let no_hyphen = parse_raw(b"From: a@x\r\nX-AgentProcessed: yes\r\nSubject: s\r\n\r\nbody").unwrap();
+        assert_eq!(no_hyphen.tags, crate::store::TAG_AGENT);
+        let without = parse_raw(b"From: a@x\r\nX-Receipt: agent processed elsewhere\r\nSubject: s\r\n\r\nbody").unwrap();
+        assert_eq!(without.tags, 0, "only the AgentProcessed field matches");
     }
 
     /// End-to-end against a local GreenMail server:

@@ -113,6 +113,8 @@ mod tests {
             from_addr: String::new(),
             date: 100 - id,
             seen: true,
+            answered: false,
+            tags: 0,
             flagged: false,
             has_attachments: false,
             preview: String::new(),
