@@ -257,11 +257,10 @@ jobs:
       - name: Write release notes
         run: |
           cat > notes.md <<'EOF'
-          Mailix __TAG__ - first release.
-
-          A fast, lightweight, IMAP-first native desktop mail client (iced, no webview).
-          Local SQLite cache, tantivy full-text search, conversations, drafts,
-          attachments, address book (LDAP/Google), optional AI assistant.
+          Mailix __TAG__ — a fast, lightweight, IMAP-first native desktop mail
+          client (iced, no webview). Local SQLite cache, tantivy full-text search,
+          conversations, drafts, tags, attachments, address book (LDAP/Google),
+          optional AI assistant.
 
           ### Downloads
 

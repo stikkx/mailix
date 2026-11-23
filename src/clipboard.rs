@@ -24,9 +24,9 @@ pub async fn copy_image(bytes: &[u8]) -> Result<()> {
     #[cfg(target_os = "linux")]
     return copy_linux(bytes, mime).await;
     #[cfg(target_os = "macos")]
-    return copy_macos(bytes).await;
+    return copy_macos(bytes, mime).await;
     #[cfg(target_os = "windows")]
-    return copy_windows(bytes).await;
+    return copy_windows(bytes, mime).await;
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         let _ = mime;
@@ -65,20 +65,34 @@ async fn copy_linux(bytes: &[u8], mime: &str) -> Result<()> {
 }
 
 #[cfg(target_os = "macos")]
-async fn copy_macos(bytes: &[u8]) -> Result<()> {
-    let path = temp_png(bytes)?;
+async fn copy_macos(bytes: &[u8], mime: &str) -> Result<()> {
+    // The AppleScript class must match the bytes, or `read` fails: a JPEG
+    // opened as PNGf is rejected.
+    let class = match mime {
+        "image/jpeg" => "«class JPEG»",
+        "image/gif" => "«class GIFf»",
+        _ => "«class PNGf»",
+    };
+    let path = temp_image(bytes).await?;
+    let script = format!(
+        "set the clipboard to (read (POSIX file \"{}\") as {class})",
+        path.display()
+    );
     let f = tokio::process::Command::new("osascript")
-        .args(["-e", &format!("set the clipboard to (read (POSIX file \"{path}\") as «class PNGf»)")] )
-        .spawn()?
-        .wait()
+        .args(["-e", &script])
+        .output()
         .await?;
     cleanup(&path);
-    if f.success() { Ok(()) } else { bail!("osascript could not set the clipboard") }
+    if f.status.success() {
+        Ok(())
+    } else {
+        bail!("osascript could not set the clipboard")
+    }
 }
 
 #[cfg(target_os = "windows")]
-async fn copy_windows(bytes: &[u8]) -> Result<()> {
-    let path = temp_png(bytes)?;
+async fn copy_windows(bytes: &[u8], _mime: &str) -> Result<()> {
+    let path = temp_image(bytes).await?;
     let script = format!(
         "Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; \
          $i=[System.Drawing.Image]::FromFile('{}'); [System.Windows.Forms.Clipboard]::SetImage($i)",
@@ -86,16 +100,23 @@ async fn copy_windows(bytes: &[u8]) -> Result<()> {
     );
     let f = tokio::process::Command::new("powershell.exe")
         .args(["-NoProfile", "-STA", "-Command", &script])
-        .spawn()?
-        .wait()
+        .output()
         .await?;
     cleanup(&path);
-    if f.success() { Ok(()) } else { bail!("could not set the clipboard") }
+    if f.status.success() {
+        Ok(())
+    } else {
+        bail!("could not set the clipboard")
+    }
 }
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
-async fn temp_png(bytes: &[u8]) -> Result<std::path::PathBuf> {
-    let path = std::env::temp_dir().join(format!("mailix-clip-{}.img", std::process::id()));
+async fn temp_image(bytes: &[u8]) -> Result<std::path::PathBuf> {
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let path = std::env::temp_dir().join(format!("mailix-clip-{}-{stamp}.img", std::process::id()));
     tokio::fs::write(&path, bytes).await?;
     Ok(path)
 }
