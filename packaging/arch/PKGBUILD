@@ -1,43 +1,46 @@
 # Maintainer: stikkx (https://github.com/stikkx)
 # Mailix: fast, lightweight, IMAP-first desktop mail client.
 #
-# While the repository is private, makepkg fetches it over SSH, so you need a
-# GitHub account with access to stikkx/mailix and your SSH key configured for
-# github.com. Once the repository is public, you can switch source= to
-#   source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-# and put a real sha256 checksum in place of SKIP.
+# This is a binary package built from the release tarball: it needs no Rust
+# toolchain and no network access beyond the release download. Always take
+# this file from the release page, because pkgver and sha256sums are filled in
+# per release:
+#   curl -fsSLO https://github.com/stikkx/mailix/releases/latest/download/PKGBUILD
+#   makepkg -si
 #
-# Build and install:
-#   makepkg -sf
-#   sudo pacman -U mailix-<version>.pkg.tar.zst
+# The repository version of this file carries a placeholder pkgver, so the
+# checkout alone cannot be built - the release asset is the usable one.
+#
+# Updates without rebuilding: the project also publishes a pacman repository
+# (built from this PKGBUILD by the release workflow), so
+#   sudo pacman -Syu
+# - and therefore `omarchy-update` - keeps Mailix current. See README "Install".
 
 pkgname=mailix
-pkgver=0.1.0
+pkgver=0.0.0
 pkgrel=1
 pkgdesc="Fast, lightweight, IMAP-first desktop mail client"
 arch=(x86_64)
 url="https://github.com/stikkx/mailix"
 license=(MIT)
+# a repack of a stripped release binary: no debug package, nothing to strip
+options=(!debug)
 depends=(wayland libxkbcommon libxkbcommon-x11 libx11 libxcursor libxrandr libxi libxinerama xdg-utils)
-makedepends=(git rust)
-source=("git+ssh://git@github.com/stikkx/mailix.git#tag=v$pkgver")
-md5sums=('SKIP')
-
-check() {
-  # Unit tests only: no network, no keyring access.
-  cd "mailix"
-  cargo test --locked
-}
-
-build() {
-  cd "mailix"
-  cargo build --release --locked
-}
+optdepends=(
+  'gnome-keyring: store mail passwords'
+  'keepassxc: alternative keyring provider'
+)
+source=("$pkgname-$pkgver-x86_64-linux.tar.gz::$url/releases/download/v$pkgver/$pkgname-$pkgver-x86_64-linux.tar.gz")
+sha256sums=('SKIP')
 
 package() {
-  cd "mailix"
-  install -Dm0755 target/release/mailix "$pkgdir/usr/bin/mailix"
-  install -Dm0644 README.md "$pkgdir/usr/share/doc/mailix/README.md"
-  install -Dm0644 assets/fonts/Inter-LICENSE.txt "$pkgdir/usr/share/licenses/mailix/Inter-LICENSE.txt"
-  install -Dm0644 assets/fonts/lucide-LICENSE.txt "$pkgdir/usr/share/licenses/mailix/lucide-LICENSE.txt"
+  cd "$srcdir/$pkgname-$pkgver"
+
+  install -Dm0755 mailix "$pkgdir/usr/bin/mailix"
+  install -Dm0644 mailix.desktop "$pkgdir/usr/share/applications/mailix.desktop"
+  install -Dm0644 mailix.png \
+    "$pkgdir/usr/share/icons/hicolor/256x256/apps/mailix.png"
+  install -Dm0644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm0644 Inter-LICENSE.txt "$pkgdir/usr/share/licenses/$pkgname/Inter-LICENSE.txt"
+  install -Dm0644 lucide-LICENSE.txt "$pkgdir/usr/share/licenses/$pkgname/lucide-LICENSE.txt"
 }

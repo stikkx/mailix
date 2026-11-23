@@ -57,11 +57,36 @@ Download a build from the [latest release](https://github.com/stikkx/mailix/rele
 | `mailix…-x86_64-linux.tar.gz` | Linux x86_64 (Ubuntu 22.04+, Debian, Arch/Omarchy): unpack and run `./mailix` |
 | `mailix…-x86_64-linux.AppImage` | Linux x86_64: portable AppImage — `chmod +x mailix…AppImage && ./mailix…AppImage` |
 | `mailix…_amd64.deb` | Ubuntu/Debian: `sudo apt install ./mailix…_amd64.deb` |
-| `PKGBUILD` | Arch/Omarchy: `makepkg -sf`, then `sudo pacman -U` on the built package |
+| `PKGBUILD` | Arch/Omarchy: `makepkg -si` (binary repack of the tarball, no toolchain needed) |
 | `mailix…-aarch64-apple-darwin.dmg` | macOS Apple Silicon |
 | `mailix…-x86_64-apple-darwin.dmg` | macOS Intel |
 | `mailix…-universal.dmg` | macOS (runs on both architectures) |
 | `mailix…-x86_64-windows.zip` | Windows: unpack anywhere and run `mailix.exe` |
+
+### Arch / Omarchy
+
+There is a pacman repository, so Mailix updates with everything else — `sudo pacman -Syu`, and
+therefore `omarchy-update`, keeps it current. One-time setup:
+
+```sh
+bash packaging/install-mailix.sh --arch-repo
+```
+
+which does the same as:
+
+```sh
+printf '[mailix]\nSigLevel = Optional TrustAll\nServer = https://stikkx.github.io/mailix/x86_64\n' \
+  | sudo tee /etc/pacman.d/mailix.conf
+sudo sed -i '/^\[core\]/i Include = /etc/pacman.d/mailix.conf' /etc/pacman.conf
+sudo pacman -Sy mailix
+```
+
+The packages are built by the release workflow from the very tarball linked above, so the binary
+is identical to every other download. Packages are not GPG-signed; trust comes from HTTPS plus the
+checksums in `SHA256SUMS`. Afterwards: `sudo pacman -S mailix` upgrades, `pacman -Qi mailix`
+shows the version.
+
+Without the repository, `makepkg -si` with the release `PKGBUILD` builds the same package by hand.
 
 Notes: the Linux tarball needs the usual Wayland/X11 libraries (the `.deb` pulls them in
 automatically) plus a keyring provider — `libxkbcommon-x11-0 libxkbcommon0 libx11-6 libxcursor1

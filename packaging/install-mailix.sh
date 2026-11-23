@@ -6,31 +6,37 @@
 #   install-mailix.sh --check      only report installed vs. latest version
 #   install-mailix.sh --force      install even if up to date
 #   install-mailix.sh --dir DIR    appimage/tarball target dir (default ~/.local/share/mailix)
+#   install-mailix.sh --arch-repo  Arch/Omarchy: add the pacman repository instead
+#                                  (then `sudo pacman -Syu` / `omarchy-update` keeps
+#                                  Mailix current, like any other package)
 #
 # Package selection:
-#   Debian/Ubuntu (dpkg present)   -> .deb  (sudo dpkg -i, updates via re-run)
-#   Arch (pacman present)          -> .deb? no — AppImage + desktop entry
-#   anything else                  -> AppImage + desktop entry
+#   installed via pacman          -> refuses to clobber it; points at pacman
+#   Debian/Ubuntu (dpkg present)  -> .deb  (sudo dpkg -i, updates via re-run)
+#   anything else                 -> AppImage + desktop entry
 #
 # Version detection:
-#   .deb install  : dpkg-query -W -f='${Version}' mailix
-#   appimage/etc. : stamp file $STAMP written by this script
+#   pacman install : pacman -Q mailix (pkgrel stripped: 0.2.1-1 -> 0.2.1)
+#   .deb install   : dpkg-query -W -f='${Version}' mailix
+#   appimage/etc.  : stamp file $STAMP written by this script
 set -euo pipefail
 
 REPO="stikkx/mailix"
 API="https://api.github.com/repos/$REPO/releases/latest"
+REPO_URL="https://stikkx.github.io/mailix/x86_64"
 APPIMAGE_BIN_DEFAULT="$HOME/.local/share/mailix/mailix.AppImage"
 BIN_LINK="$HOME/.local/bin/mailix"
 STAMP="$HOME/.local/share/mailix/.installed-version"
 DESKTOP_SRC="$HOME/.local/share/mailix/mailix.desktop"
 
-check=0; force=0; dir=""
+check=0; force=0; dir=""; arch_repo=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --check) check=1 ;;
     --force) force=1 ;;
+    --arch-repo) arch_repo=1 ;;
     --dir) dir="${2:?}"; shift ;;
-    -h|--help) sed -n '2,10p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,21p' "$0"; exit 0 ;;
     *) echo "Unknown option: $1" >&2; exit 2 ;;
   esac
   shift
@@ -58,24 +64,53 @@ tag="$(printf '%s' "$manifest" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*
 version="${tag#v}"   # asset names use the version without leading v
 
 # --- installed version -----------------------------------------------------
+# pacman first: on Arch, dpkg may exist for other reasons and must not win.
 installed=""
-if command -v dpkg-query >/dev/null 2>&1 && dpkg-query -W -f='${Status}' mailix 2>/dev/null | grep -q "install ok installed"; then
+if command -v pacman >/dev/null 2>&1 && pacman -Q mailix >/dev/null 2>&1; then
+  installed="$(pacman -Q mailix | awk '{print $2}')"
+  method="pacman"
+elif command -v dpkg-query >/dev/null 2>&1 && dpkg-query -W -f='${Status}' mailix 2>/dev/null | grep -q "install ok installed"; then
   installed="$(dpkg-query -W -f='${Version}' mailix)"
   method="deb"
 elif [ -f "$STAMP" ]; then
   installed="$(cat "$STAMP")"
   method="appimage"
-elif command -v pacman >/dev/null 2>&1 && pacman -Q mailix >/dev/null 2>&1; then
-  installed="$(pacman -Q mailix | awk '{print $2}')"
-  method="pacman"
 fi
+# pacman reports 0.2.1-1, dpkg 0.2.1: compare plain versions
+installed="${installed%%-*}"
 
 log "Latest release: $tag"
-log "Installed: ${installed:-none}"
+log "Installed: ${installed:-none}${method:+ ($method)}"
+
+# --- Arch / Omarchy: hand over to pacman ----------------------------------
+if [ "$arch_repo" = 1 ]; then
+  command -v pacman >/dev/null 2>&1 || die "--arch-repo is for Arch-based systems only."
+  log "Adding the Mailix pacman repository ..."
+  printf '[mailix]\nSigLevel = Optional TrustAll\nServer = %s\n' "$REPO_URL" \
+    | sudo tee /etc/pacman.d/mailix.conf >/dev/null
+  if ! grep -q '^\[mailix\]' /etc/pacman.conf; then
+    sudo sed -i '/^\[core\]/i Include = /etc/pacman.d/mailix.conf' /etc/pacman.conf
+    log "Included /etc/pacman.d/mailix.conf in /etc/pacman.conf"
+  fi
+  sudo pacman -Sy --noconfirm mailix
+  log "Installed via pacman. Update later with: sudo pacman -Syu (or omarchy-update)"
+  exit 0
+fi
 
 if [ "$check" = 1 ]; then
   if [ "$installed" = "$version" ]; then echo "Up to date."; else echo "Update available: ${installed:-none} -> $version"; fi
   exit 0
+fi
+
+if [ "$method" = "pacman" ]; then
+  if [ "$installed" = "$version" ]; then
+    log "Already up to date (pacman package)."
+    exit 0
+  fi
+  warn "Mailix is installed as a pacman package — leaving it to pacman."
+  warn "Update it with:  sudo pacman -Syu    (or: omarchy-update)"
+  warn "No Mailix repo configured yet?  $0 --arch-repo"
+  exit 1
 fi
 
 if [ "$installed" = "$version" ] && [ "$force" = 0 ]; then
@@ -95,7 +130,7 @@ verify() {
 }
 
 # --- choose package --------------------------------------------------------
-if command -v dpkg >/dev/null 2>&1; then
+if command -v dpkg >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
   deb="mailix_${version}_amd64.deb"
   fetch "$deb"; verify "$deb"
   log "Installing $deb (requires sudo) ..."
@@ -129,6 +164,3 @@ echo "$version" > "$STAMP"
 
 log "Installed $version. Start with: mailix"
 [ "${PATH//$HOME\/.local\/bin/}" != "$PATH" ] || warn "$HOME/.local/bin is not in PATH — add it to use 'mailix' from the terminal."
-case "$method" in
-  pacman) warn "'pacman -Q mailix' still reports the old version; consider removing that package to avoid two copies." ;;
-esac

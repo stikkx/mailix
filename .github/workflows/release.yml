@@ -54,6 +54,8 @@ jobs:
           mkdir -p "dist/mailix-$VER"
           cp target/release/mailix "dist/mailix-$VER/"
           cp README.md assets/fonts/Inter-LICENSE.txt assets/fonts/lucide-LICENSE.txt "dist/mailix-$VER/"
+          # shipped so the Arch package and desktop entries can reuse them
+          cp packaging/deb/mailix.desktop assets/icon/mailix.png "dist/mailix-$VER/"
           tar -czf "mailix-$VER-x86_64-linux.tar.gz" -C dist "mailix-$VER"
 
       - name: Package .deb
@@ -221,16 +223,27 @@ jobs:
 
   arch:
     name: Arch / Omarchy (PKGBUILD)
+    needs: linux
     runs-on: ubuntu-latest
     steps:
       - name: Check out
         uses: actions/checkout@v4
 
+      - name: Download the Linux tarball
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-x86_64-dist
+          path: dist
+
       - name: Prepare PKGBUILD
         run: |
           set -euo pipefail
           VER="${GITHUB_REF_NAME#v}"
-          sed "s/^pkgver=.*/pkgver=$VER/" packaging/arch/PKGBUILD > PKGBUILD
+          SUM="$(sha256sum "dist/mailix-$VER-x86_64-linux.tar.gz" | cut -d' ' -f1)"
+          sed -e "s/^pkgver=.*/pkgver=$VER/" \
+              -e "s/^sha256sums=.*/sha256sums=('$SUM')/" \
+              packaging/arch/PKGBUILD > PKGBUILD
+          grep -q "^sha256sums=('$SUM')" PKGBUILD
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -238,6 +251,72 @@ jobs:
           name: arch-dist
           path: PKGBUILD
           if-no-files-found: error
+
+  pacman:
+    name: pacman repository (Arch)
+    needs: [release]
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    steps:
+      - name: Install tools
+        run: |
+          pacman-key --init
+          pacman-key --populate archlinux
+          pacman -Syu --noconfirm --needed base-devel git zstd curl
+
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Fetch the PKGBUILD from the release
+        run: |
+          set -euo pipefail
+          curl -fsSL -o PKGBUILD \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/PKGBUILD"
+          head -n 40 PKGBUILD | grep -E "^(pkgname|pkgver)="
+
+      - name: Build the package
+        run: |
+          set -euo pipefail
+          useradd -m builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          su - builder -c "cd '$GITHUB_WORKSPACE' && makepkg --noconfirm --nodeps"
+          ls -1 mailix-*.pkg.tar.zst
+
+      - name: Publish to the pacman branch
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          URL="https://x-access-token:$TOKEN@github.com/${GITHUB_REPOSITORY}.git"
+          git config --global --add safe.directory '*' 2>/dev/null || true
+          work="$(mktemp -d)"
+          if git ls-remote --exit-code --heads "$URL" pacman >/dev/null 2>&1; then
+            git clone --quiet --branch pacman --depth 1 "$URL" "$work"
+          else
+            git init --quiet --initial-branch pacman "$work"
+            git -C "$work" remote add origin "$URL"
+          fi
+          mkdir -p "$work/x86_64"
+          cp mailix-*.pkg.tar.zst "$work/x86_64/"
+          # every package is passed in, so -R only prunes the previous build
+          ( cd "$work" && repo-add --quiet -R x86_64/mailix.db.tar.gz x86_64/*.pkg.tar.zst )
+          git -C "$work" add -A
+          git -C "$work" -c user.name="github-actions[bot]" \
+            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit --quiet -m "pacman: mailix ${GITHUB_REF_NAME#v}"
+          git -C "$work" push --quiet origin pacman
+          echo "Published $(cd "$work" && ls x86_64/*.pkg.tar.zst | xargs -n1 basename)"
+
+      - name: Rebuild the Pages site
+        continue-on-error: true
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/pages/builds" >/dev/null
 
   release:
     name: Publish GitHub release
@@ -269,11 +348,26 @@ jobs:
           | mailix-__TAG__-x86_64-linux.tar.gz | Linux, x86_64 (Ubuntu 22.04+, Debian, Arch/Omarchy) - unpack and run mailix |
           | mailix-__TAG__-x86_64-linux.AppImage | Linux, x86_64 - portable AppImage, no install: chmod +x and run |
           | mailix___TAG___amd64.deb | Ubuntu/Debian - sudo apt install ./mailix___TAG___amd64.deb |
-          | PKGBUILD | Arch / Omarchy - makepkg -sf, then sudo pacman -U on the built package |
+          | PKGBUILD | Arch / Omarchy - makepkg -si, then sudo pacman -U on the built package |
           | mailix-__TAG__-aarch64-apple-darwin.dmg | macOS 11+, Apple Silicon |
           | mailix-__TAG__-x86_64-apple-darwin.dmg | macOS 11+, Intel |
           | mailix-__TAG__-universal.dmg | macOS 11+, universal (both architectures) |
           | mailix-__TAG__-x86_64-windows.zip | Windows 10/11 x64 - portable zip |
+
+          ### Arch / Omarchy: updates via pacman
+
+          Mailix has a pacman repository, so `sudo pacman -Syu` (and therefore
+          `omarchy-update`) keeps it current. One-time setup:
+
+          ```
+          printf '[mailix]\nSigLevel = Optional TrustAll\nServer = https://stikkx.github.io/mailix/x86_64\n' |
+            sudo tee /etc/pacman.d/mailix.conf
+          sudo sed -i '/^\[core\]/i Include = /etc/pacman.d/mailix.conf' /etc/pacman.conf
+          sudo pacman -Sy mailix
+          ```
+
+          Packages come from this repository and are built from the very tarball
+          listed above, so the binary is identical to every other download.
 
           ### First-run notes
 
