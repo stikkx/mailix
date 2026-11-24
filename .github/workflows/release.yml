@@ -53,7 +53,7 @@ jobs:
           VER="${GITHUB_REF_NAME#v}"
           mkdir -p "dist/mailix-$VER"
           cp target/release/mailix "dist/mailix-$VER/"
-          cp README.md assets/fonts/Inter-LICENSE.txt assets/fonts/lucide-LICENSE.txt "dist/mailix-$VER/"
+          cp README.md LICENSE assets/fonts/Inter-LICENSE.txt assets/fonts/lucide-LICENSE.txt "dist/mailix-$VER/"
           # shipped so the Arch package and desktop entries can reuse them
           cp packaging/deb/mailix.desktop assets/icon/mailix.png "dist/mailix-$VER/"
           tar -czf "mailix-$VER-x86_64-linux.tar.gz" -C dist "mailix-$VER"
@@ -67,7 +67,7 @@ jobs:
           sed "s/^Version: .*/Version: $VER/" packaging/deb/control > deb/DEBIAN/control
           cp target/release/mailix deb/usr/bin/mailix
           cp packaging/deb/mailix.desktop deb/usr/share/applications/
-          cp packaging/deb/copyright README.md deb/usr/share/doc/mailix/
+          cp packaging/deb/copyright README.md LICENSE deb/usr/share/doc/mailix/
           mkdir -p deb/usr/share/icons/hicolor/256x256/apps
           cp assets/icon/mailix.png deb/usr/share/icons/hicolor/256x256/apps/mailix.png
           echo "Installed-Size: $(du -sk deb/usr | cut -f1)" >> deb/DEBIAN/control
@@ -354,8 +354,10 @@ jobs:
 
           ### Arch / Omarchy: updates via pacman
 
-          Mailix has a pacman repository, so `sudo pacman -Syu` (and therefore
-          `omarchy-update`) keeps it current. One-time setup:
+          Mailix has a pacman repository, so it updates with the rest of the
+          system. On Omarchy that means `omarchy update` (Omarchy refuses a
+          direct `sudo pacman -Syu`); on plain Arch, `sudo pacman -Syu`.
+          One-time setup:
 
           ```
           printf '[mailix]\nSigLevel = Optional TrustAll\nServer = https://stikkx.github.io/mailix/x86_64\n' |

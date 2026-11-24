@@ -65,8 +65,9 @@ Download a build from the [latest release](https://github.com/stikkx/mailix/rele
 
 ### Arch / Omarchy
 
-There is a pacman repository, so Mailix updates with everything else — `sudo pacman -Syu`, and
-therefore `omarchy-update`, keeps it current. One-time setup:
+There is a pacman repository, so Mailix updates with everything else. On Omarchy run
+`omarchy update` — a plain `sudo pacman -Syu` is intercepted by Omarchy's pre-transaction hook and
+refused. On plain Arch, `sudo pacman -Syu` is the way. One-time setup:
 
 ```sh
 bash packaging/install-mailix.sh --arch-repo
@@ -182,3 +183,9 @@ cargo test -- --ignored                      # e2e (sync, attachments, STARTTLS,
 
 IDLE for folders other than the inbox, OAuth2 login for Gmail/Outlook IMAP, two-way contact sync,
 saving a draft when the window is closed (the 30 s autosave covers most of it).
+
+## License
+
+MIT — see [LICENSE](LICENSE). The bundled fonts keep their own licences:
+`assets/fonts/Inter-LICENSE.txt` (OFL-1.1) and `assets/fonts/lucide-LICENSE.txt` (ISC).
+

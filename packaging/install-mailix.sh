@@ -7,8 +7,8 @@
 #   install-mailix.sh --force      install even if up to date
 #   install-mailix.sh --dir DIR    appimage/tarball target dir (default ~/.local/share/mailix)
 #   install-mailix.sh --arch-repo  Arch/Omarchy: add the pacman repository instead
-#                                  (then `sudo pacman -Syu` / `omarchy-update` keeps
-#                                  Mailix current, like any other package)
+#                                  (then `omarchy update`, or `sudo pacman -Syu`
+#                                  on plain Arch, keeps Mailix current)
 #
 # Package selection:
 #   installed via pacman          -> refuses to clobber it; points at pacman
@@ -93,7 +93,8 @@ if [ "$arch_repo" = 1 ]; then
     log "Included /etc/pacman.d/mailix.conf in /etc/pacman.conf"
   fi
   sudo pacman -Sy --noconfirm mailix
-  log "Installed via pacman. Update later with: sudo pacman -Syu (or omarchy-update)"
+  log "Installed via pacman. Update later with: omarchy update"
+  log "Plain Arch: sudo pacman -Syu"
   exit 0
 fi
 
@@ -108,7 +109,12 @@ if [ "$method" = "pacman" ]; then
     exit 0
   fi
   warn "Mailix is installed as a pacman package — leaving it to pacman."
-  warn "Update it with:  sudo pacman -Syu    (or: omarchy-update)"
+  if command -v omarchy >/dev/null 2>&1; then
+    warn "Update it with:  omarchy update"
+    warn "(Omarchy refuses a direct sudo pacman -Syu.)"
+  else
+    warn "Update it with:  sudo pacman -Syu"
+  fi
   warn "No Mailix repo configured yet?  $0 --arch-repo"
   exit 1
 fi
