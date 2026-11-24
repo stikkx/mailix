@@ -11,7 +11,8 @@ workflow from the official release tarball.</p>
 SigLevel = Optional TrustAll
 Server = https://stikkx.github.io/mailix/x86_64</pre>
 <p>Add that to <code>/etc/pacman.conf</code> (or include it from
-<code>/etc/pacman.d/mailix.conf</code>), then <code>sudo pacman -Sy mailix</code>.
-Later updates arrive with <code>sudo pacman -Syu</code>, so
-<code>omarchy-update</code> keeps Mailix current.</p>
+<code>/etc/pacman.d/mailix.conf</code>), then <code>sudo pacman -Sy mailix</code>.</p>
+<p>Later updates arrive with the rest of the system: on Omarchy that is
+<code>omarchy update</code> (Omarchy refuses a direct <code>sudo pacman -Syu</code>),
+on plain Arch <code>sudo pacman -Syu</code>.</p>
 <p><a href="x86_64/">x86_64/</a></p>
