@@ -10,7 +10,7 @@ use iced::widget::{
     Column, Row, Space, button, checkbox, column, container, pick_list, row, rule, scrollable, text, text_editor,
     text_input, tooltip,
 };
-use iced::{Alignment, Color, Element, Fill, Font, Length};
+use iced::{Alignment, Background, Border, Color, Element, Fill, Font, Length};
 
 type El<'a> = Element<'a, Msg>;
 
@@ -135,6 +135,29 @@ fn tool<'a>(glyph: char, label: &'a str, msg: Option<Msg>, tip: &'a str) -> El<'
 
 fn icon_btn<'a>(glyph: char, msg: Msg, tip: &'a str) -> El<'a> {
     tool(glyph, "", Some(msg), tip)
+}
+
+/// Reader toggle for one of the two tags: a coloured marker plus its name,
+/// filled while the tag is set. Keys `1` and `2` do the same.
+fn tag_toggle<'a>(name: &'a str, color: Color, on: bool, msg: Msg, tip: &'a str) -> El<'a> {
+    let marker = container(Space::new().width(9).height(9)).style(move |_| container::Style {
+        background: on.then_some(Background::Color(color)),
+        border: Border { color, width: 1.0, radius: 0.0.into() },
+        ..Default::default()
+    });
+    let content = row![marker, text(name).size(13)].spacing(7).align_y(Alignment::Center);
+    let b = button(content).padding([6, 9]).style(theme::tab(on)).on_press(msg);
+    tooltip(b, container(text(tip).size(12)).padding([4, 8]).style(theme::boxed), tooltip::Position::Bottom).into()
+}
+
+/// List marker for a tag, with the tag's name on hover.
+fn tag_marker<'a>(color: Color, tip: &'a str) -> El<'a> {
+    tooltip(
+        tagchip(color),
+        container(text(tip).size(12)).padding([4, 8]).style(theme::boxed),
+        tooltip::Position::Right,
+    )
+    .into()
 }
 
 fn count_badge<'a>(n: i64) -> El<'a> {
@@ -920,13 +943,13 @@ impl App {
             flags = flags.push(icon(ic::FLAG, 13).style(|t: &iced::Theme| text::Style { color: Some(t.palette().warning) }));
         }
         if s.tags & crate::store::TAG_TODO != 0 {
-            flags = flags.push(tagchip(theme::CHIP_TODO));
+            flags = flags.push(tag_marker(theme::CHIP_TODO, "Todo (press 1)"));
         }
         if s.tags & crate::store::TAG_IMPORTANT != 0 {
-            flags = flags.push(tagchip(theme::CHIP_IMPORTANT));
+            flags = flags.push(tag_marker(theme::CHIP_IMPORTANT, "Important (press 2)"));
         }
         if s.tags & crate::store::TAG_AGENT != 0 {
-            flags = flags.push(tagchip(theme::CHIP_AGENT));
+            flags = flags.push(tag_marker(theme::CHIP_AGENT, "AgentProcessed"));
         }
         // Single-line texts are clipped in their own box so they never run
         // under the date or the attachment/flag icons.
@@ -1040,6 +1063,21 @@ impl App {
             tool(ic::DELETE, "", Some(Msg::Delete), "Delete (Del)"),
             tool(if s.flagged { ic::UNFLAG } else { ic::FLAG }, "", Some(Msg::ToggleFlag), if s.flagged { "Remove flag (s)" } else { "Flag (s)" }),
             tool(if s.seen { ic::MAIL } else { ic::MAIL_OPEN }, "", Some(Msg::ToggleSeen), if s.seen { "Mark as unread (u)" } else { "Mark as read (u)" }),
+            container(vr()).height(20).padding([0, 6]).into(),
+            tag_toggle(
+                "Todo",
+                theme::CHIP_TODO,
+                s.tags & crate::store::TAG_TODO != 0,
+                Msg::ToggleTag(crate::store::TAG_TODO),
+                if s.tags & crate::store::TAG_TODO != 0 { "Remove the Todo tag (1)" } else { "Tag as Todo (1)" },
+            ),
+            tag_toggle(
+                "Important",
+                theme::CHIP_IMPORTANT,
+                s.tags & crate::store::TAG_IMPORTANT != 0,
+                Msg::ToggleTag(crate::store::TAG_IMPORTANT),
+                if s.tags & crate::store::TAG_IMPORTANT != 0 { "Remove the Important tag (2)" } else { "Tag as Important (2)" },
+            ),
         ])
         .spacing(2)
         .align_y(Alignment::Center);

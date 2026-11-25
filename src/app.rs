@@ -293,6 +293,9 @@ pub struct App {
 pub enum Msg {
     ThemeMode(Mode),
     Key(keyboard::Key, keyboard::Modifiers),
+    /// A key that is also a shortcut, arriving after the search field was
+    /// asked whether it has focus (`bool` = focused).
+    KeyChecked(keyboard::Key, keyboard::Modifiers, bool),
     Modifiers(keyboard::Modifiers),
     ReaderAction(usize, text_editor::Action),
     Tick,
@@ -1053,7 +1056,22 @@ impl App {
                 self.mode = mode;
                 self.theme = crate::theme::build(mode, &self.cfg.appearance.accent);
             }
-            Msg::Key(key, mods) => return self.on_key(key, mods),
+            Msg::Key(key, mods) => {
+                // Typing into the search field must not trigger "e" (archive),
+                // "s" (flag) and friends, so shortcuts of that shape ask the
+                // widget tree whether the search input has focus first.
+                if needs_focus_check(&key, mods) {
+                    let key = key.clone();
+                    return operation::is_focused(SEARCH_ID)
+                        .map(move |focused| Msg::KeyChecked(key.clone(), mods, focused));
+                }
+                return self.on_key(key, mods);
+            }
+            Msg::KeyChecked(key, mods, focused) => {
+                if !focused {
+                    return self.on_key(key, mods);
+                }
+            }
             Msg::Modifiers(m) => self.mods = m,
             Msg::ReaderAction(i, action) => {
                 // Read-only: allow selecting, copying and moving, never editing.
@@ -1392,9 +1410,9 @@ impl App {
                     let mark = self.remote(acc, move |a, pw| async move {
                         imap::set_flag(&a, &pw, &s.folder, s.uid, "\\Seen", true).await
                     });
-                    return Task::batch([load, mark]);
+                    return Task::batch([load, mark, unfocus()]);
                 }
-                return load;
+                return Task::batch([load, unfocus()]);
             }
             Msg::MoreRows => {
                 self.limit += PAGE;
@@ -1408,13 +1426,15 @@ impl App {
             }
             Msg::SubmitQuery => {
                 if let Some(first) = self.list.first().map(|s| s.id) {
-                    return self.update(Msg::Open(first));
+                    return Task::batch([self.update(Msg::Open(first)), unfocus()]);
                 }
+                return unfocus();
             }
             Msg::ClearQuery => {
                 self.query.clear();
                 self.results = false;
                 self.reload_list();
+                return unfocus();
             }
             Msg::AiSearch => {
                 if self.query.trim().is_empty() || self.ai_busy {
@@ -2766,6 +2786,23 @@ async fn read_attachment(path: PathBuf) -> anyhow::Result<Attachment> {
     })
 }
 
+/// Drops focus from whatever has it. Used to hand the keyboard back to the
+/// mail shortcuts after searching, since a focused search field would keep
+/// eating them.
+fn unfocus() -> Task<Msg> {
+    iced::advanced::widget::operate(iced::advanced::widget::operation::focusable::unfocus())
+}
+
+/// Whether a key is both a mail shortcut and something you may type into a
+/// text field. Command/Control combinations never insert text, so they skip
+/// the focus check; Escape, F5 and the arrows keep their meaning everywhere.
+fn needs_focus_check(key: &Key, mods: keyboard::Modifiers) -> bool {
+    if mods.command() {
+        return false;
+    }
+    matches!(key, Key::Character(c) if !c.is_empty()) || matches!(key, Key::Named(Named::Delete))
+}
+
 /// Desktop notification for newly arrived inbox mail.
 fn notify(account: String, new: Vec<crate::notify::NewMail>, preview: bool) -> Task<Msg> {
     let (summary, body) = crate::notify::format(&account, &new, preview);
@@ -3019,6 +3056,22 @@ pub fn short_date(ts: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_typing_shape_keys_wait_for_the_search_focus() {
+        let none = keyboard::Modifiers::default();
+        let cmd = keyboard::Modifiers::COMMAND;
+        // typed characters and Delete may be meant for the search field
+        assert!(needs_focus_check(&Key::Character("e".into()), none));
+        assert!(needs_focus_check(&Key::Character("1".into()), none));
+        assert!(needs_focus_check(&Key::Named(Named::Delete), none));
+        // shortcuts with a command modifier never insert text
+        assert!(!needs_focus_check(&Key::Character("r".into()), cmd));
+        // and these keep working while typing
+        assert!(!needs_focus_check(&Key::Named(Named::Escape), none));
+        assert!(!needs_focus_check(&Key::Named(Named::F5), none));
+        assert!(!needs_focus_check(&Key::Named(Named::ArrowDown), none));
+    }
 
     #[test]
     fn forward_includes_html_and_images() {

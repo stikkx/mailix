@@ -27,9 +27,9 @@ A fast, lightweight, IMAP-first desktop mail client in Rust for Linux, macOS and
   whole conversation; recipients are chips — drag one between the To/Cc/Bcc lines, click to edit it, ×
   to remove. Display names with commas (e.g. "Rueter, Marc <…>") are handled everywhere
 - **Folders**: create a folder with the folder-plus button next to an account; Enter creates it, Esc cancels
-- **Tags**: press `1` to toggle a blue **Todo** or `2` a red **Important** tag on the open mail — stored as
+- **Tags**: click **Todo** or **Important** in the reader toolbar, or press `1` / `2` — stored as
   Thunderbird-compatible IMAP keywords (`$label4`, `$label1`), so other clients see the same tags. Tagged mail
-  gets a coloured chip in the list.
+  gets a coloured chip in the list (hover it for the name).
 - **AgentProcessed**: mail whose source carries an `X-Agent-Processed` field (`X-AgentProcessed` etc. also match)
   shows a yellow badge in the list and the reader.
 - **Answered sign**: when a reply has gone out — sent in Mailix (set automatically) or another client (`\Answered`
