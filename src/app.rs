@@ -461,6 +461,7 @@ pub enum SettingsMsg {
     AiModel(String),
     Accent(String),
     Notifications(bool),
+    NotifyPreview(bool),
     AiKey(String),
     SyncInterval(String),
     GrammarEnabled(bool),
@@ -1083,7 +1084,7 @@ impl App {
                         self.last_sync = Some(chrono::Local::now().timestamp());
                         if self.cfg.notifications && !report.new_inbox.is_empty() {
                             let acc = self.account(&id).map(|a| a.name.clone()).unwrap_or_default();
-                            tasks.push(notify(acc, report.new_inbox));
+                            tasks.push(notify(acc, report.new_inbox, self.cfg.notify_preview));
                         }
                     }
                     Err(e) => {
@@ -2475,6 +2476,7 @@ impl App {
                 }
             }
             SettingsMsg::Notifications(b) => s.draft.notifications = b,
+            SettingsMsg::NotifyPreview(b) => s.draft.notify_preview = b,
             SettingsMsg::GrammarEnabled(b) => s.draft.grammar.enabled = b,
             SettingsMsg::GrammarServer(v) => s.draft.grammar.server = v,
             SettingsMsg::GrammarLanguage(l) => s.draft.grammar.language = l,
@@ -2765,18 +2767,17 @@ async fn read_attachment(path: PathBuf) -> anyhow::Result<Attachment> {
 }
 
 /// Desktop notification for newly arrived inbox mail.
-fn notify(account: String, new: Vec<(String, String)>) -> Task<Msg> {
+fn notify(account: String, new: Vec<crate::notify::NewMail>, preview: bool) -> Task<Msg> {
+    let (summary, body) = crate::notify::format(&account, &new, preview);
     Task::future(async move {
         let _ = tokio::task::spawn_blocking(move || {
-            let mut n = notify_rust::Notification::new();
-            n.appname("Mailix").icon("mail-unread");
-            if let [(from, subject)] = new.as_slice() {
-                n.summary(from).body(subject);
-            } else {
-                let body: Vec<String> = new.iter().take(4).map(|(f, s)| format!("{f}: {s}")).collect();
-                n.summary(&format!("{} new messages · {account}", new.len())).body(&body.join("\n"));
-            }
-            n.show().map(|_| ())
+            notify_rust::Notification::new()
+                .appname("Mailix")
+                .icon("mail-unread")
+                .summary(&summary)
+                .body(&body)
+                .show()
+                .map(|_| ())
         })
         .await;
     })

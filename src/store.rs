@@ -130,6 +130,8 @@ pub struct NewMessage {
     pub tags: u8,
     pub attachments: Vec<String>,
     pub preview: String,
+    /// First lines of the body for the new-mail notification (not stored).
+    pub preview_lines: String,
     pub body_text: String,
     /// Full RFC 5322 source (HTML, attachments). Empty if not downloaded.
     pub raw: Vec<u8>,
@@ -675,6 +677,7 @@ mod tests {
             tags: 0,
             attachments: vec![],
             preview: String::new(),
+            preview_lines: String::new(),
             body_text: "hello".into(),
             raw: b"Subject: x\r\n\r\nhello".to_vec(),
         }

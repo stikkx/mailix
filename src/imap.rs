@@ -144,9 +144,9 @@ fn assign_roles(folders: &[(String, Option<char>, Option<FolderRole>)]) -> Vec<F
 pub struct SyncReport {
     pub new_messages: usize,
     pub removed: usize,
-    /// Unread mail that arrived in the inbox since the last sync
-    /// (sender, subject) — empty on the very first sync.
-    pub new_inbox: Vec<(String, String)>,
+    /// Unread mail that arrived in the inbox since the last sync — empty on
+    /// the very first sync.
+    pub new_inbox: Vec<crate::notify::NewMail>,
 }
 
 impl SyncReport {
@@ -332,7 +332,11 @@ async fn sync_folder(
         if is_inbox && !first_sync {
             for (_, m) in added.iter().filter(|(_, m)| !m.seen) {
                 let who = if m.from_name.is_empty() { m.from_addr.clone() } else { m.from_name.clone() };
-                report.new_inbox.push((who, m.subject.clone()));
+                report.new_inbox.push(crate::notify::NewMail {
+                    from: who,
+                    subject: m.subject.clone(),
+                    preview: m.preview_lines.clone(),
+                });
             }
         }
         let docs: Vec<Doc<'_>> = added
@@ -427,15 +431,20 @@ pub fn parse_raw(raw: &[u8]) -> Option<NewMessage> {
         Some(t) if !t.trim().is_empty() => t.into_owned(),
         _ => html.as_deref().map(html_to_text).unwrap_or_default(),
     };
-    let preview: String = body_text
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('>'))
+    let body_lines = || {
+        body_text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('>'))
+            .map(str::to_string)
+    };
+    let preview: String = body_lines().collect::<Vec<_>>().join(" ").chars().take(160).collect();
+    // Notifications show these as separate lines, the way the mail was written.
+    let preview_lines: String = body_lines()
+        .take(3)
+        .map(|l| l.chars().take(120).collect::<String>())
         .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .take(160)
-        .collect();
+        .join("\n");
     let attachments = msg
         .attachments()
         .filter(|p| {
@@ -483,6 +492,7 @@ pub fn parse_raw(raw: &[u8]) -> Option<NewMessage> {
         },
         attachments,
         preview,
+        preview_lines,
         body_text,
         raw: Vec::new(),
     })
@@ -905,7 +915,7 @@ mod tests {
 
         let r = sync_inbox(&acc, "pass", &store, &search).await.unwrap();
         assert!(r.new_messages >= 1);
-        assert_eq!(r.new_inbox.iter().filter(|(_, s)| s == "pushed").count(), 1, "{:?}", r.new_inbox);
+        assert_eq!(r.new_inbox.iter().filter(|m| m.subject == "pushed").count(), 1, "{:?}", r.new_inbox);
     }
 
     #[test]

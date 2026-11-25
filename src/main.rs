@@ -12,6 +12,7 @@ mod imap;
 mod markup;
 mod mime;
 mod net;
+mod notify;
 mod search;
 mod secrets;
 mod signature;

@@ -438,6 +438,9 @@ pub struct Config {
     /// Desktop notification for new inbox mail.
     #[serde(default = "yes")]
     pub notifications: bool,
+    /// Show the first lines of the message in that notification.
+    #[serde(default = "yes")]
+    pub notify_preview: bool,
     /// Background sync interval in minutes (0 = manual only).
     #[serde(default = "sync_interval")]
     pub sync_interval_minutes: u64,
@@ -460,6 +463,7 @@ impl Default for Config {
             sidebar_mode: SidebarMode::default(),
             threads: true,
             notifications: true,
+            notify_preview: true,
             sync_interval_minutes: sync_interval(),
         }
     }
@@ -543,6 +547,7 @@ mod tests {
         let c: Config = toml::from_str("[ai]\nenabled = true\nmodel = \"claude-opus-5-5\"\n").unwrap();
         assert_eq!(c.ai.provider, AiProvider::Anthropic);
         assert!(c.notifications);
+        assert!(c.notify_preview, "previews are on for configs written before the field");
         assert_eq!(AiProvider::OllamaCloud.key_name(), "ai:ollama-cloud:api_key");
     }
 }

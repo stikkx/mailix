@@ -33,6 +33,7 @@ the doc comment on each test.
 | `src/view.rs` | All widgets/layout, icon codepoints (`mod ic`), editor highlighters |
 | `src/theme.rs` | Colours and widget styles (all square, radius 0) |
 | `src/imap.rs` | IMAP: connect, sync, IDLE, folder roles, move, append, drafts (+ e2e tests) |
+| `src/notify.rs` | Notification text: sender, subject, first lines of the mail |
 | `src/clipboard.rs` | Image clipboard (wl-copy/xclip/osascript/PowerShell) |
 | `src/smtp.rs` | Building (lettre) and sending mail; drafts via mail-builder |
 | `src/mime.rs` | Parsing, HTML → selectable text runs/blocks, attachments |

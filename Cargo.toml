@@ -1,6 +1,6 @@
 [package]
 name = "mailix"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 description = "Fast, lightweight, IMAP-first desktop mail client"
 license = "MIT"

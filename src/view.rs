@@ -1752,6 +1752,11 @@ impl App {
                     .on_toggle(|b| Msg::Settings(SettingsMsg::Notifications(b)))
                     .text_size(14)
                     .style(theme::check),
+                checkbox(s.draft.notify_preview)
+                    .label("Show the first lines of the message in notifications (visible on the lock screen)")
+                    .on_toggle(|b| Msg::Settings(SettingsMsg::NotifyPreview(b)))
+                    .text_size(14)
+                    .style(theme::check),
                 section("Grammar & spelling"),
                 checkbox(s.draft.grammar.enabled)
                     .label("Check grammar and spelling while writing (German and English, via LanguageTool)")

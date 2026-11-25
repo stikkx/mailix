@@ -39,7 +39,8 @@ A fast, lightweight, IMAP-first desktop mail client in Rust for Linux, macOS and
 - **Drafts**: leaving the composer (Esc, clicking a folder or mail) or 30 s of typing saves the message to
   the server's Drafts folder; **Edit** in the Drafts folder continues it; Discard deletes it
 - **Attachments**: open/save received files, attach files (picker or drag & drop), forward with attachments
-- **Instant new mail** via IMAP IDLE (status bar shows "live"), desktop notifications
+- **Instant new mail** via IMAP IDLE (status bar shows "live"), desktop notifications with the sender,
+  subject and the first lines of the message (Settings → show message text, since a lock screen shows it too)
 - **Optional AI assistant**: Anthropic (Claude), OpenAI, Ollama (local), Ollama Cloud, OpenCode Zen,
   OpenRouter or any OpenAI-compatible server — natural-language search, drafting/rewriting, summaries.
   Off by default; only the text of an action you trigger is sent.
