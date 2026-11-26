@@ -1278,6 +1278,7 @@ impl App {
                     if let Some(d) = c.addr_drag.take() {
                         if !d.active {
                             // A click pulls the chip back into the input for editing.
+                            c.addr_drop = None;
                             addr_edit(c, d.field, d.idx);
                             return operation::focus(addr_input_id(d.field));
                         }

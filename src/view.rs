@@ -1370,8 +1370,14 @@ impl App {
                     .on_exit(Msg::AddrChipLeft(f, i)),
                 );
             }
-            row![
-                row_chips,
+            // Chips wrap on their own line(s) so many recipients never spill
+            // out of the box; the input keeps the full width underneath.
+            let chips_row = container(row_chips.wrap().vertical_spacing(6)).width(Fill).padding(iced::Padding {
+                bottom: if chips.is_empty() { 0.0 } else { 4.0 },
+                ..Default::default()
+            });
+            column![
+                chips_row,
                 text_input("", tail)
                     .id(match f {
                         Field::To => COMPOSE_TO_ID,
@@ -1385,32 +1391,30 @@ impl App {
                     .style(theme::bare_input)
                     .width(Fill),
             ]
-            .align_y(Alignment::Center)
             .into()
         };
-        // Recipient lines accept a dragged chip: highlight the one under the
-        // cursor while a drag is going on.
+        // Every typing row gets the same quiet box; only the recipient lines
+        // recolour it while a dragged chip hovers over them.
+        let field_box = |content: El<'a>, hot: bool| -> El<'a> {
+            container(content)
+                .padding([4, 8])
+                .width(Fill)
+                .style(move |t: &iced::Theme| theme::field(t, hot))
+                .into()
+        };
         let drag_active = matches!(&c.addr_drag, Some(d) if d.active);
-        let drop_line = |target: Field, label: &'a str, content: El<'a>| -> El<'a> {
+        let drop_line = |target: Field, label: &'a str, content: El<'a>, extra: Option<El<'a>>| -> El<'a> {
             let hot = drag_active && c.addr_drop == Some(target);
+            let mut inner = row![muted(label).size(13).width(LABEL_W), field_box(content, hot)]
+                .spacing(8)
+                .align_y(Alignment::Center);
+            if let Some(extra) = extra {
+                inner = inner.push(extra);
+            }
             iced::widget::mouse_area(
-                container(
-                    row![muted(label).size(13).width(LABEL_W), content].align_y(Alignment::Center),
-                )
-                .padding([4, 16])
-                .height(44)
-                .align_y(iced::alignment::Vertical::Center)
-                .style(move |t: &iced::Theme| {
-                    if hot {
-                        container::Style {
-                            background: Some(t.extended_palette().background.weak.color.into()),
-                            border: iced::Border { color: t.palette().primary, width: 1.0, radius: 0.0.into() },
-                            ..Default::default()
-                        }
-                    } else {
-                        container::Style::default()
-                    }
-                }),
+                container(inner)
+                    .padding([3, 16])
+                    .align_y(iced::alignment::Vertical::Center),
             )
             .on_enter(Msg::AddrDropHover(target))
             .on_exit(Msg::AddrDropLeft(target))
@@ -1430,24 +1434,21 @@ impl App {
             drop_line(
                 Field::To,
                 "To",
-                row![
-                    field(&c.to, Field::To),
+                field(&c.to, Field::To),
+                Some(
                     button(text(if c.show_cc { "Hide Cc/Bcc" } else { "Cc/Bcc" }).size(12))
                         .padding([4, 8])
                         .style(theme::tool)
                         .on_press(Msg::ToggleCc)
-                ]
-                .width(Fill)
-                .spacing(8)
-                .align_y(Alignment::Center)
-                .into()
+                        .into(),
+                ),
             ),
             hr(),
         ];
         if c.show_cc {
-            form = form.push(drop_line(Field::Cc, "Cc", field(&c.cc, Field::Cc)));
+            form = form.push(drop_line(Field::Cc, "Cc", field(&c.cc, Field::Cc), None));
             form = form.push(hr());
-            form = form.push(drop_line(Field::Bcc, "Bcc", field(&c.bcc, Field::Bcc)));
+            form = form.push(drop_line(Field::Bcc, "Bcc", field(&c.bcc, Field::Bcc), None));
             form = form.push(hr());
         }
         if !c.suggestions.is_empty() {
@@ -1470,15 +1471,23 @@ impl App {
                 bottom: 4.0,
             }));
         }
-        form = form.push(line(
-            "Subject",
-            text_input("", &c.subject)
-                .on_input(Msg::ComposeSubject)
-                .padding([6, 0])
-                .size(14)
-                .style(theme::bare_input)
-                .into(),
-        ));
+        form = form.push(
+            container(row![
+                muted("Subject").size(13).width(LABEL_W),
+                field_box(
+                    text_input("", &c.subject)
+                        .on_input(Msg::ComposeSubject)
+                        .padding([6, 0])
+                        .size(14)
+                        .style(theme::bare_input)
+                        .width(Fill)
+                        .into(),
+                    false,
+                ),
+            ]
+            .align_y(Alignment::Center))
+            .padding([3, 16]),
+        );
         form = form.push(hr());
 
         if !c.attachments.is_empty() {

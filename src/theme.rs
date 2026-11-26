@@ -173,6 +173,22 @@ pub fn boxed(theme: &Theme) -> container::Style {
     }
 }
 
+/// Recipient line in the composer: a quiet box that is always there, tinted
+/// while a dragged address chip hovers over it.
+pub fn field(theme: &Theme, hot: bool) -> container::Style {
+    let p = theme.extended_palette();
+    let (color, background) = if hot {
+        (p.primary.base.color, Some(Background::Color(p.background.weak.color)))
+    } else {
+        (p.background.strong.color, None)
+    };
+    container::Style {
+        background,
+        border: Border { color, width: 1.0, radius: 0.0.into() },
+        ..Default::default()
+    }
+}
+
 pub fn note(theme: &Theme) -> container::Style {
     let p = theme.extended_palette();
     container::Style {
