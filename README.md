@@ -26,6 +26,8 @@ A fast, lightweight, IMAP-first desktop mail client in Rust for Linux, macOS and
 - **Drag & drop**: drag a mail onto a folder to move it; dragging a conversation's top row moves the
   whole conversation; recipients are chips — drag one between the To/Cc/Bcc lines, click to edit it, ×
   to remove. Display names with commas (e.g. "Rueter, Marc <…>") are handled everywhere
+- **Multi-select**: Ctrl/Cmd-click picks rows in the list, Shift-click or Shift+↑/↓ takes a range; `Del`, `e`,
+  `s`, `u`, `1`, `2` and drag-and-drop then act on all picked mail. Esc clears the picks, clicking a row opens it
 - **Folders**: create a folder with the folder-plus button next to an account; Enter creates it, Esc cancels
 - **Tags**: click **Todo** or **Important** in the reader toolbar, or press `1` / `2` — stored as
   Thunderbird-compatible IMAP keywords (`$label4`, `$label1`), so other clients see the same tags. Tagged mail

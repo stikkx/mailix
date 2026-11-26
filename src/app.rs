@@ -249,6 +249,12 @@ pub struct App {
     pub query: String,
     pub results: bool,
     pub selected: Option<i64>,
+    /// Rows picked with Cmd/Ctrl-click or Shift-click: bulk actions and drags
+    /// apply to them.
+    pub checked: std::collections::BTreeSet<i64>,
+    /// Where a Shift range starts, and the end that Shift+arrows extend.
+    pub check_anchor: Option<i64>,
+    pub check_cursor: Option<i64>,
     pub open: Option<Mail>,
     pub summary: Option<String>,
     /// Parsed full source of the open message (HTML + attachments).
@@ -331,6 +337,8 @@ pub enum Msg {
     Done(Result<String, String>),
     Select(Selection),
     Open(i64),
+    /// A click on a list row: Cmd/Ctrl picks it, Shift extends, else it opens.
+    OpenRow(i64),
     MoreRows,
     Query(String),
     SubmitQuery,
@@ -551,6 +559,9 @@ impl App {
             query: String::new(),
             results: false,
             selected: None,
+            checked: std::collections::BTreeSet::new(),
+            check_anchor: None,
+            check_cursor: None,
             open: None,
             summary: None,
             parsed: None,
@@ -654,6 +665,9 @@ impl App {
     /// What a drag starting on this row moves: the whole conversation when
     /// it is the conversation's newest message, else just this mail.
     fn drag_ids(&self, id: i64) -> Vec<i64> {
+        if self.checked.len() > 1 && self.checked.contains(&id) {
+            return self.checked.iter().copied().collect();
+        }
         let row = self.rows.iter().find(|r| self.list[r.idx].id == id);
         match row {
             Some(r) if r.depth == 0 && r.count > 1 && !r.key.is_empty() => crate::thread::group(&self.list)
@@ -867,6 +881,149 @@ impl App {
         if let Err(e) = self.cfg.save() {
             self.status = Some(Err(format!("Could not save settings: {e:#}")));
         }
+    }
+
+    /// Cmd/Ctrl-click toggles one row, Shift-click takes the range from the
+    /// anchor. Neither opens a message.
+    fn pick_row(&mut self, id: i64, toggle: bool, extend: bool) {
+        if extend {
+            let ids = self.visible_ids();
+            let anchor = self.check_anchor.or(self.selected).unwrap_or(id);
+            if let Some(range) = range_ids(&ids, anchor, id) {
+                self.checked = range.into_iter().collect();
+                self.check_cursor = Some(id);
+            }
+        } else if toggle {
+            if !self.checked.remove(&id) {
+                self.checked.insert(id);
+            }
+            self.check_anchor = Some(id);
+            self.check_cursor = Some(id);
+        }
+    }
+
+    /// Shift+arrow grows or shrinks the picked range; the reader stays put.
+    fn extend_selection(&mut self, delta: isize) -> Task<Msg> {
+        let ids = self.visible_ids();
+        let Some(first) = ids.first().copied() else { return Task::none() };
+        let cursor = self.check_cursor.or(self.selected).unwrap_or(first);
+        let anchor = self.check_anchor.unwrap_or(cursor);
+        let Some(i) = ids.iter().position(|&x| x == cursor) else { return Task::none() };
+        let target = ids[(i as isize + delta).clamp(0, ids.len() as isize - 1) as usize];
+        if let Some(range) = range_ids(&ids, anchor, target) {
+            self.checked = range.into_iter().collect();
+            self.check_cursor = Some(target);
+            self.check_anchor = Some(anchor);
+        }
+        Task::none()
+    }
+
+    fn clear_checked(&mut self) {
+        self.checked.clear();
+        self.check_anchor = None;
+        self.check_cursor = None;
+    }
+
+    /// Mails a bulk action applies to: the picked rows, else the open mail
+    /// (which may not be in the visible list any more).
+    fn action_mails(&self) -> Vec<Summary> {
+        if self.checked.is_empty() {
+            return self.open.as_ref().map(|m| vec![m.summary.clone()]).unwrap_or_default();
+        }
+        self.checked.iter().filter_map(|id| self.list.iter().find(|s| s.id == *id).cloned()).collect()
+    }
+
+    /// Deletes or archives every picked mail (or just the open one). Mail that
+    /// already sits in the target folder is removed for good.
+    fn trash_or_archive(&mut self, archive: bool) -> Task<Msg> {
+        let mails = self.action_mails();
+        if mails.is_empty() {
+            return Task::none();
+        }
+        // Keep the old "open the neighbour" behaviour for a single mail.
+        let next = (mails.len() == 1).then(|| {
+            let id = mails[0].id;
+            let ids = self.visible_ids();
+            ids.iter().position(|&x| x == id).and_then(|i| {
+                ids.get(i + 1).or_else(|| i.checked_sub(1).and_then(|j| ids.get(j))).copied()
+            })
+        }).flatten();
+        let role = if archive { FolderRole::Archive } else { FolderRole::Trash };
+
+        let mut groups: Vec<(String, Vec<Summary>)> = Vec::new();
+        for m in mails {
+            match groups.iter_mut().find(|(a, _)| *a == m.account) {
+                Some((_, v)) => v.push(m),
+                None => groups.push((m.account.clone(), vec![m])),
+            }
+        }
+        let (mut tasks, mut done, mut touched) = (Vec::new(), 0usize, Vec::new());
+        let mut without_folder: Vec<String> = Vec::new();
+        for (account, group) in groups {
+            let dest = self.store.folder_by_role(&account, role).ok().flatten();
+            if archive && dest.is_none() {
+                without_folder
+                    .push(self.account(&account).map(|a| a.name.clone()).unwrap_or_else(|| account.clone()));
+                continue;
+            }
+            // Already where it would go, or no Trash folder: delete for good.
+            let (permanent, moving): (Vec<Summary>, Vec<Summary>) =
+                group.into_iter().partition(|m| dest.as_ref() == Some(&m.folder) || dest.is_none());
+            if !permanent.is_empty() {
+                let ids: Vec<i64> = permanent.iter().map(|m| m.id).collect();
+                for id in &ids {
+                    let _ = self.store.delete_message(*id);
+                }
+                self.search.remove(&ids);
+                if let Some(acc) = self.account(&account).cloned() {
+                    for (_, folder, uids) in group_uids(&permanent) {
+                        tasks.push(self.remote(acc.clone(), move |a, pw| async move {
+                            imap::move_messages(&a, &pw, &folder, &uids, None).await
+                        }));
+                    }
+                }
+                done += ids.len();
+                touched.extend(ids);
+            }
+            if let (false, Some(dest)) = (moving.is_empty(), dest) {
+                let ids: Vec<i64> = moving.iter().map(|m| m.id).collect();
+                done += ids.len();
+                touched.extend(ids.iter().copied());
+                tasks.push(self.move_to(&ids, account, dest));
+            }
+        }
+        let _ = self.search.commit();
+        if self.selected.is_some_and(|s| touched.contains(&s)) {
+            self.selected = None;
+            self.open = None;
+        }
+        self.clear_checked();
+        self.refresh();
+        self.status = if without_folder.is_empty() {
+            let verb = if archive { "Archived" } else { "Deleted" };
+            Some(Ok(format!("{verb} {done} {}", plural(done))))
+        } else {
+            Some(Err(format!("No Archive folder for {}.", without_folder.join(", "))))
+        };
+        let mut task = Task::batch(tasks);
+        if let Some(id) = next {
+            task = Task::batch([task, self.update(Msg::Open(id))]);
+        }
+        task
+    }
+
+    /// Sets one flag on several mails, one server round trip per folder.
+    fn flag_mails(&self, mails: &[Summary], flag: &str, on: bool) -> Task<Msg> {
+        let flag = flag.to_string();
+        let mut tasks = Vec::new();
+        for (account, folder, uids) in group_uids(mails) {
+            let Some(acc) = self.account(&account).cloned() else { continue };
+            let flag = flag.clone();
+            tasks.push(self.remote(acc, move |a, pw| async move {
+                imap::set_flags(&a, &pw, &folder, &uids, &flag, on).await
+            }));
+        }
+        Task::batch(tasks)
     }
 
     fn move_list_selection(&mut self, delta: isize) -> Task<Msg> {
@@ -1295,9 +1452,11 @@ impl App {
                 if !d.active {
                     return Task::none();
                 }
-                let Some((account, folder)) = self.hovered.as_deref().and_then(|k| k.split_once('\u{1f}')) else {
+                let Some(key) = self.hovered.clone() else { return Task::none() };
+                let Some((account, folder)) = key.split_once('\u{1f}') else {
                     return Task::none();
                 };
+                self.clear_checked();
                 return self.move_to(&d.ids, account.to_string(), folder.to_string());
             }
             Msg::Unhover(key) => {
@@ -1373,9 +1532,20 @@ impl App {
                 self.query.clear();
                 self.limit = PAGE;
                 self.screen = Screen::Mail;
+                self.clear_checked();
                 self.reload_list();
             }
+            Msg::OpenRow(id) => {
+                if self.mods.command() || self.mods.shift() {
+                    self.pick_row(id, self.mods.command(), self.mods.shift());
+                    return Task::none();
+                }
+                self.clear_checked();
+                return self.update(Msg::Open(id));
+            }
             Msg::Open(id) => {
+                self.check_anchor = Some(id);
+                self.check_cursor = Some(id);
                 self.selected = Some(id);
                 self.summary = None;
                 self.parsed = None;
@@ -1423,6 +1593,7 @@ impl App {
                 self.query = q;
                 self.results = !self.query.trim().is_empty();
                 self.limit = PAGE;
+                self.clear_checked();
                 self.reload_list();
             }
             Msg::SubmitQuery => {
@@ -1475,59 +1646,57 @@ impl App {
                 }
             }
             Msg::ToggleTag(bit) => {
-                let Some((acc, s)) = self.current() else { return Task::none() };
+                let mails = self.action_mails();
+                if mails.is_empty() {
+                    return Task::none();
+                }
                 let keyword = if bit == crate::store::TAG_TODO {
                     crate::store::KEYWORD_TODO
                 } else {
                     crate::store::KEYWORD_IMPORTANT
                 };
-                let on = s.tags & bit == 0;
-                let _ = self.store.set_tag(s.id, bit, on);
+                // Tag everything unless every picked mail already carries it.
+                let on = !mails.iter().all(|m| m.tags & bit != 0);
+                for m in &mails {
+                    let _ = self.store.set_tag(m.id, bit, on);
+                }
                 self.refresh();
-                return self.remote(acc, move |a, pw| async move {
-                    imap::set_flag(&a, &pw, &s.folder, s.uid, keyword, on).await
-                });
+                let tag = if bit == crate::store::TAG_TODO { "Todo" } else { "Important" };
+                let n = mails.len();
+                self.status =
+                    Some(Ok(format!("{tag} {} on {n} {}", if on { "set" } else { "removed" }, plural(n))));
+                return self.flag_mails(&mails, keyword, on);
             }
             Msg::ToggleSeen | Msg::ToggleFlag => {
-                let Some((acc, s)) = self.current() else { return Task::none() };
-                let (flag, on) = if matches!(msg, Msg::ToggleSeen) {
-                    let _ = self.store.set_seen(s.id, !s.seen);
-                    ("\\Seen", !s.seen)
-                } else {
-                    let _ = self.store.set_flagged(s.id, !s.flagged);
-                    ("\\Flagged", !s.flagged)
-                };
-                self.refresh();
-                return self.remote(acc, move |a, pw| async move {
-                    imap::set_flag(&a, &pw, &s.folder, s.uid, flag, on).await
-                });
-            }
-            Msg::Delete | Msg::Archive => {
-                let Some((acc, s)) = self.current() else { return Task::none() };
-                let role = if matches!(msg, Msg::Delete) { FolderRole::Trash } else { FolderRole::Archive };
-                let dest = self.store.folder_by_role(&acc.id, role).ok().flatten();
-                if matches!(msg, Msg::Archive) && dest.is_none() {
-                    self.status = Some(Err("This account has no Archive folder.".into()));
+                let mails = self.action_mails();
+                if mails.is_empty() {
                     return Task::none();
                 }
-                // Already in trash → delete for good.
-                let dest = dest.filter(|d| *d != s.folder);
-                let ids = self.visible_ids();
-                let next = ids.iter().position(|&x| x == s.id).and_then(|i| {
-                    ids.get(i + 1).or_else(|| i.checked_sub(1).and_then(|j| ids.get(j))).copied()
-                });
-                let _ = self.store.delete_message(s.id);
-                self.search.remove(&[s.id]);
-                let _ = self.search.commit();
-                self.selected = None;
-                self.open = None;
+                let seen = matches!(msg, Msg::ToggleSeen);
+                // Flip to the state most of the selection is not in.
+                let on = !mails.iter().all(|m| if seen { m.seen } else { m.flagged });
+                for m in &mails {
+                    let _ = if seen { self.store.set_seen(m.id, on) } else { self.store.set_flagged(m.id, on) };
+                }
                 self.refresh();
-                let t = self.remote(acc.clone(), move |a, pw| async move {
-                    imap::move_message(&a, &pw, &s.folder, s.uid, dest.as_deref()).await
-                });
-                let open_next = next.map(|id| self.update(Msg::Open(id))).unwrap_or_else(Task::none);
-                return Task::batch([t, open_next]);
+                let n = mails.len();
+                self.status = Some(Ok(format!(
+                    "{} {n} {}",
+                    if seen && on {
+                        "Marked read"
+                    } else if seen {
+                        "Marked unread"
+                    } else if on {
+                        "Flagged"
+                    } else {
+                        "Unflagged"
+                    },
+                    plural(n)
+                )));
+                let flag = if seen { "\\Seen" } else { "\\Flagged" };
+                return self.flag_mails(&mails, flag, on);
             }
+            Msg::Delete | Msg::Archive => return self.trash_or_archive(matches!(msg, Msg::Archive)),
             Msg::Remote(r) => {
                 if let Err(e) = r {
                     self.status = Some(Err(format!("Server update failed: {e}")));
@@ -1807,6 +1976,7 @@ impl App {
                 // (fast drags lose `CursorMoved` messages). A click releases
                 // over the row itself, so this only fires on real drops.
                 let Some(d) = self.drag.take() else { return Task::none() };
+                self.clear_checked();
                 let Some((account, folder)) = key.split_once('\u{1f}') else { return Task::none() };
                 return self.move_to(&d.ids, account.to_string(), folder.to_string());
             }
@@ -2217,6 +2387,10 @@ impl App {
         match (&self.screen, key.as_ref()) {
             (_, Key::Named(Named::Escape)) if self.new_folder.is_some() => self.update(Msg::NewFolderCancel),
             (_, Key::Named(Named::Escape)) if !matches!(self.screen, Screen::Mail) => self.update(Msg::CloseScreen),
+            (Screen::Mail, Key::Named(Named::Escape)) if !self.checked.is_empty() => {
+                self.clear_checked();
+                Task::none()
+            }
             (_, Key::Named(Named::Escape)) if self.results => self.update(Msg::ClearQuery),
             (Screen::Compose(_), Key::Named(Named::Enter)) if cmd => self.update(Msg::Send),
             (Screen::Mail, Key::Character("n")) if cmd => self.update(Msg::NewMail),
@@ -2226,6 +2400,8 @@ impl App {
             (Screen::Mail, Key::Character("r")) if cmd => self.update(Msg::Reply { all: false }),
             (Screen::Mail, Key::Character("l")) if cmd => self.update(Msg::Forward),
             (Screen::Mail, Key::Named(Named::F5)) => self.update(Msg::SyncAll),
+            (Screen::Mail, Key::Named(Named::ArrowDown)) if mods.shift() => self.extend_selection(1),
+            (Screen::Mail, Key::Named(Named::ArrowUp)) if mods.shift() => self.extend_selection(-1),
             (Screen::Mail, Key::Named(Named::ArrowDown) | Key::Character("j")) => self.move_list_selection(1),
             (Screen::Mail, Key::Named(Named::ArrowUp) | Key::Character("k")) => self.move_list_selection(-1),
             (Screen::Mail, Key::Named(Named::Delete)) => self.update(Msg::Delete),
@@ -2794,6 +2970,29 @@ fn unfocus() -> Task<Msg> {
     iced::advanced::widget::operate(iced::advanced::widget::operation::focusable::unfocus())
 }
 
+fn plural(n: usize) -> &'static str {
+    if n == 1 { "mail" } else { "mails" }
+}
+
+/// Every id from `anchor` to `target` in list order (Shift-click selection).
+fn range_ids(ids: &[i64], anchor: i64, target: i64) -> Option<Vec<i64>> {
+    let a = ids.iter().position(|&x| x == anchor)?;
+    let b = ids.iter().position(|&x| x == target)?;
+    Some(ids[a.min(b)..=a.max(b)].to_vec())
+}
+
+/// Groups mails into (account, folder, uids) so one command covers a folder.
+fn group_uids(mails: &[Summary]) -> Vec<(String, String, Vec<u32>)> {
+    let mut out: Vec<(String, String, Vec<u32>)> = Vec::new();
+    for m in mails {
+        match out.iter_mut().find(|(a, f, _)| *a == m.account && *f == m.folder) {
+            Some((_, _, uids)) => uids.push(m.uid),
+            None => out.push((m.account.clone(), m.folder.clone(), vec![m.uid])),
+        }
+    }
+    out
+}
+
 /// Whether a key is both a mail shortcut and something you may type into a
 /// text field. Command/Control combinations never insert text, so they skip
 /// the focus check; Escape, F5 and the arrows keep their meaning everywhere.
@@ -3057,6 +3256,45 @@ pub fn short_date(ts: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shift_ranges_run_in_both_directions() {
+        let ids = [10, 20, 30, 40, 50];
+        assert_eq!(range_ids(&ids, 20, 40), Some(vec![20, 30, 40]));
+        assert_eq!(range_ids(&ids, 40, 20), Some(vec![20, 30, 40]), "shift upwards");
+        assert_eq!(range_ids(&ids, 30, 30), Some(vec![30]), "a single row");
+        assert_eq!(range_ids(&ids, 20, 99), None, "row not in the list");
+    }
+
+    #[test]
+    fn bulk_flags_group_by_account_and_folder() {
+        let mails: Vec<Summary> = [(7, "a", "INBOX", 1u32), (8, "a", "INBOX", 2), (9, "a", "Archive", 3), (10, "b", "INBOX", 4)]
+            .into_iter()
+            .map(|(id, account, folder, uid)| Summary {
+                id,
+                account: account.into(),
+                folder: folder.into(),
+                uid,
+                subject: String::new(),
+                from_name: String::new(),
+                from_addr: String::new(),
+                date: 0,
+                seen: false,
+                flagged: false,
+                answered: false,
+                has_attachments: false,
+                preview: String::new(),
+                message_id: String::new(),
+                refs: String::new(),
+                tags: 0,
+            })
+            .collect();
+        let groups = group_uids(&mails);
+        assert_eq!(groups.len(), 3, "{groups:?}");
+        assert_eq!(groups[0], ("a".into(), "INBOX".into(), vec![1, 2]));
+        assert_eq!(groups[1], ("a".into(), "Archive".into(), vec![3]));
+        assert_eq!(groups[2], ("b".into(), "INBOX".into(), vec![4]));
+    }
 
     #[test]
     fn only_typing_shape_keys_wait_for_the_search_focus() {

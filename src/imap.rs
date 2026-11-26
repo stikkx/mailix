@@ -516,10 +516,28 @@ pub async fn set_flag(acc: &AccountConfig, password: &str, folder: &str, uid: u3
     Ok(())
 }
 
-/// Moves a message (to Trash / Archive). Uses MOVE when available, falls
-/// back to COPY + \Deleted + EXPUNGE. `to = None` deletes permanently.
-pub async fn move_message(acc: &AccountConfig, password: &str, folder: &str, uid: u32, to: Option<&str>) -> Result<()> {
-    move_messages(acc, password, folder, &[uid], to).await
+/// Sets one flag on several messages of a folder in a single command.
+pub async fn set_flags(
+    acc: &AccountConfig,
+    password: &str,
+    folder: &str,
+    uids: &[u32],
+    flag: &str,
+    on: bool,
+) -> Result<()> {
+    if uids.is_empty() {
+        return Ok(());
+    }
+    let set = uids.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+    let mut s = connect(acc, password).await?;
+    s.select(folder).await?;
+    let op = if on { "+FLAGS.SILENT" } else { "-FLAGS.SILENT" };
+    {
+        let stream = s.uid_store(set, format!("{op} ({flag})")).await?;
+        let _: Vec<Fetch> = stream.try_collect().await?;
+    }
+    s.logout().await.ok();
+    Ok(())
 }
 
 /// Moves several messages of one folder in one go.
@@ -786,7 +804,7 @@ mod tests {
         assert!(!msg.summary.seen);
 
         set_flag(&acc, "secret", "INBOX", msg.summary.uid, "\\Seen", true).await.unwrap();
-        move_message(&acc, "secret", "INBOX", msg.summary.uid, None).await.unwrap();
+        move_messages(&acc, "secret", "INBOX", &[msg.summary.uid], None).await.unwrap();
 
         // Plain IMAP port too, and incremental sync picks up the changes.
         acc.imap = srv(3143, Security::Plain);

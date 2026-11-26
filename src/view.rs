@@ -860,10 +860,13 @@ impl App {
             }
         };
         let unread = self.list.iter().filter(|s| !s.seen).count();
+        let picked = self.checked.len();
         let sub = container(
             row![
                 text(title).font(SEMIBOLD).size(14).width(Fill),
-                muted(if unread > 0 {
+                muted(if picked > 0 {
+                    format!("{picked} selected · Esc clears")
+                } else if unread > 0 {
                     format!("{unread} unread · {}", self.list.len())
                 } else {
                     format!("{}", self.list.len())
@@ -911,7 +914,7 @@ impl App {
 
     fn list_row<'a>(&'a self, r: &'a ListRow) -> El<'a> {
         let s: &'a Summary = &self.list[r.idx];
-        let selected = self.selected == Some(s.id);
+        let selected = self.selected == Some(s.id) || self.checked.contains(&s.id);
         let from = if s.from_name.is_empty() { s.from_addr.as_str() } else { s.from_name.as_str() };
         let unread = r.any_unread;
         if r.depth > 0 {
@@ -980,7 +983,7 @@ impl App {
         .width(Fill)
         .padding(0)
         .style(theme::row(selected))
-        .on_press(Msg::Open(s.id));
+        .on_press(Msg::OpenRow(s.id));
         drag_source(row, s.id)
     }
 
@@ -1020,7 +1023,7 @@ impl App {
         .width(Fill)
         .padding(0)
         .style(theme::row(selected))
-        .on_press(Msg::Open(s.id))
+        .on_press(Msg::OpenRow(s.id))
         .into()
     }
 

@@ -1,5 +1,5 @@
 Package: mailix
-Version: 0.2.5
+Version: 0.2.6
 Architecture: amd64
 Maintainer: stikkx <stikkx@users.noreply.github.com>
 Depends: libx11-6, libxcursor1, libxrandr2, libxi6, libxinerama1, libxext6, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0
